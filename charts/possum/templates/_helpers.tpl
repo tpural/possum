@@ -25,6 +25,22 @@ app.kubernetes.io/component: {{ .component }}
 {{ .Values.credentials.existingSecret | default (printf "%s-credentials" (include "possum.fullname" .)) }}
 {{- end -}}
 
+{{- define "possum.affinity" -}}
+{{- $nodes := include "possum.nodeNames" .root | fromJsonArray -}}
+{{- if .affinity -}}
+affinity: {{- toYaml .affinity | nindent 2 }}
+{{- else if $nodes -}}
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: NotIn
+              values: {{- toYaml $nodes | nindent 16 }}
+{{- end -}}
+{{- end -}}
+
 {{- define "possum.nodeNames" -}}
 {{- $names := list -}}
 {{- range .Values.config.nodeGroups -}}{{- range .nodes -}}{{- $names = append $names .name -}}{{- end -}}{{- end -}}

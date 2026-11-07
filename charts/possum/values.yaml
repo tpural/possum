@@ -26,6 +26,8 @@ credentials:
   username: ""
   password: ""
 
+# The provider and autoscaler avoid the managed nodes unless an affinity is set, so a scale-down never
+# evicts them.
 provider:
   resources:
     requests: {cpu: 10m, memory: 32Mi}
@@ -52,6 +54,7 @@ autoscaler:
     limits: {memory: 512Mi}
   nodeSelector: {}
   tolerations: []
+  affinity: {}
   args:
     scale-down-unneeded-time: 10m
     scale-down-delay-after-add: 10m
