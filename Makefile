@@ -1,4 +1,4 @@
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+VERSION ?= $(patsubst v%,%,$(shell git describe --tags --always --dirty 2>/dev/null || echo dev))
 IMAGE   ?= ghcr.io/tpural/possum
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
@@ -21,7 +21,7 @@ image:
 	docker buildx build --platform linux/amd64,linux/arm64 --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) .
 
 chart:
-	helm package charts/possum --version $(VERSION:v%=%) --app-version $(VERSION) -d dist
+	helm package charts/possum --version $(VERSION) --app-version $(VERSION) -d dist
 
 install-yaml:
 	mkdir -p dist

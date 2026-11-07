@@ -3,7 +3,7 @@ name: possum
 description: Power idle Kubernetes nodes off and back on with the Cluster Autoscaler.
 type: application
 version: 0.1.0
-appVersion: v0.1.0
+appVersion: "0.1.0"
 home: https://github.com/tpural/possum
 sources:
   - https://github.com/tpural/possum

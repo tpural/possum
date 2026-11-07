@@ -66,5 +66,6 @@ networkPolicy:
 
 httpRoute:
   enabled: false
+  annotations: {}
   hostnames: []
   parentRefs: []

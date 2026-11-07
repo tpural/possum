@@ -105,6 +105,17 @@ Writing a driver takes one Go package with four methods. See [docs/drivers.md](d
 - [Configuration reference](docs/configuration.md)
 - [Writing a driver](docs/drivers.md)
 
+## Releases
+
+Versions come from [conventional commits](https://www.conventionalcommits.org/). Merging a PR with a
+`feat:` or `fix:` commit into `main` releases the next `0.x.y` automatically: a git tag, a GitHub
+release with notes and `install.yaml`, the image `ghcr.io/tpural/possum:<version>`, and the chart
+`oci://ghcr.io/tpural/charts/possum`.
+
+PR titles must be conventional commits too, because squash-merging turns the title into the commit.
+To try a pull request before merging, a maintainer comments `/rc` on it. That publishes a release
+candidate such as `0.2.0-rc.<pr>.<run>` (image and chart), and the workflow replies with the references.
+
 ## License
 
 Apache-2.0
