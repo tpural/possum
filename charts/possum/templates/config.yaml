@@ -17,7 +17,7 @@ metadata:
   labels: {{- include "possum.labels" . | nindent 4 }}
 data:
   cloud-config.yaml: |
-    address: {{ include "possum.fullname" . }}.{{ .Release.Namespace }}.svc:8086
+    address: 127.0.0.1:8086
     grpc_timeout: 10s
 {{- end }}
 {{- if and (not .Values.credentials.existingSecret) .Values.credentials.username }}

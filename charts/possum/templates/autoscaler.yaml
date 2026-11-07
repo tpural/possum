@@ -1,11 +1,5 @@
 {{- if .Values.autoscaler.enabled }}
 {{- $name := printf "%s-autoscaler" (include "possum.fullname" .) }}
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: {{ $name }}
-  labels: {{- include "possum.labels" . | nindent 4 }}
----
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -54,7 +48,7 @@ roleRef:
   name: {{ $name }}
 subjects:
   - kind: ServiceAccount
-    name: {{ $name }}
+    name: {{ include "possum.fullname" $ }}
     namespace: {{ .Release.Namespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -81,57 +75,6 @@ roleRef:
   name: {{ $name }}
 subjects:
   - kind: ServiceAccount
-    name: {{ $name }}
+    name: {{ include "possum.fullname" $ }}
     namespace: {{ .Release.Namespace }}
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: {{ $name }}
-  labels: {{- include "possum.labels" . | nindent 4 }}
-spec:
-  replicas: 1
-  selector:
-    matchLabels: {{- include "possum.selector" (dict "root" . "component" "autoscaler") | nindent 6 }}
-  template:
-    metadata:
-      labels: {{- include "possum.selector" (dict "root" . "component" "autoscaler") | nindent 8 }}
-      annotations:
-        checksum/config: {{ toYaml .Values.config | sha256sum }}
-    spec:
-      serviceAccountName: {{ $name }}
-      priorityClassName: system-cluster-critical
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65534
-        seccompProfile: {type: RuntimeDefault}
-      containers:
-        - name: cluster-autoscaler
-          image: {{ .Values.autoscaler.image.repository }}:{{ .Values.autoscaler.image.tag }}
-          command: [./cluster-autoscaler]
-          args:
-            - --cloud-provider=externalgrpc
-            - --cloud-config=/etc/autoscaler/cloud-config.yaml
-            - --namespace={{ .Release.Namespace }}
-            {{- range $k, $v := .Values.autoscaler.args }}
-            - --{{ $k }}={{ $v }}
-            {{- end }}
-          resources: {{- toYaml .Values.autoscaler.resources | nindent 12 }}
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities: {drop: [ALL]}
-          volumeMounts:
-            - {name: cloud-config, mountPath: /etc/autoscaler, readOnly: true}
-      volumes:
-        - name: cloud-config
-          configMap:
-            name: {{ $name }}
-      {{- with .Values.autoscaler.nodeSelector }}
-      nodeSelector: {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.autoscaler.tolerations }}
-      tolerations: {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- include "possum.affinity" (dict "root" . "affinity" .Values.autoscaler.affinity) | nindent 6 }}
 {{- end }}
