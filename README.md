@@ -106,6 +106,7 @@ Writing a driver takes one Go package with four methods. See [docs/drivers.md](d
 - [How it works](docs/how-it-works.md)
 - [Configuration reference](docs/configuration.md)
 - [Writing a driver](docs/drivers.md)
+- [Scale-to-zero gate](docs/gate.md) for HTTP backends like llama-swap
 
 ## Releases
 

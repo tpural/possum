@@ -3,18 +3,22 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
@@ -31,6 +35,7 @@ import (
 	"github.com/tpural/possum/internal/agent"
 	"github.com/tpural/possum/internal/config"
 	"github.com/tpural/possum/internal/externalgrpc/protos"
+	"github.com/tpural/possum/internal/gate"
 	"github.com/tpural/possum/internal/provider"
 	"github.com/tpural/possum/internal/status"
 	"github.com/tpural/possum/pkg/power"
@@ -43,6 +48,7 @@ const usage = `usage: possum <command> [flags]
 commands:
   provider   run the Cluster Autoscaler externalgrpc provider
   agent      run the node agent
+  gate       scale an HTTP backend to zero and wake it on demand
   version    print the version
 `
 
@@ -62,6 +68,8 @@ func run() int {
 	switch os.Args[1] {
 	case "provider":
 		err = runProvider(ctx, os.Args[2:])
+	case "gate":
+		err = runGate(ctx, os.Args[2:])
 	case "agent":
 		err = runAgent(ctx, os.Args[2:])
 	case "version":
@@ -152,6 +160,94 @@ func runProvider(ctx context.Context, args []string) error {
 	defer cancel()
 	gs.GracefulStop()
 	_ = hs.Shutdown(shutdownCtx)
+	return err
+}
+
+func runGate(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("gate", flag.ExitOnError)
+	listen := fs.String("listen", ":8080", "proxy listen address")
+	adminAddr := fs.String("admin-addr", ":9090", "health and metrics listen address")
+	upstream := fs.String("upstream", "", "backend URL, e.g. http://llama-swap-backend.llama-swap.svc:8080")
+	deployment := fs.String("deployment", "", "backend Deployment as namespace/name")
+	modelsConfig := fs.String("models-config", "", "llama-swap config.yaml to answer /v1/models from")
+	idle := fs.Duration("idle", 30*time.Minute, "scale to zero after this long without requests, unless a rule matches")
+	var rules []gate.Rule
+	fs.Func("idle-rule", `per-source idle time, repeatable: "host llm.example.com 10m", "cidr 10.0.0.0/8 1h", "header User-Agent=^n8n 10m"`, func(s string) error {
+		r, err := gate.ParseRule(s)
+		rules = append(rules, r)
+		return err
+	})
+	wakeTimeout := fs.Duration("wake-timeout", 15*time.Minute, "how long a request waits for the backend")
+	kubeconfig := fs.String("kubeconfig", "", "kubeconfig path; in-cluster config when empty")
+	klog.InitFlags(fs)
+	_ = fs.Parse(args)
+	log := klog.NewKlogr().WithName("gate")
+
+	u, err := url.Parse(*upstream)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("--upstream %q is not a URL", *upstream)
+	}
+	ns, name, ok := strings.Cut(*deployment, "/")
+	if !ok || ns == "" || name == "" {
+		return fmt.Errorf("--deployment %q is not namespace/name", *deployment)
+	}
+	var models []gate.Model
+	if *modelsConfig != "" {
+		if models, err = gate.LoadLlamaSwapModels(*modelsConfig); err != nil {
+			return err
+		}
+	}
+	client, err := kubeClient(*kubeconfig)
+	if err != nil {
+		return err
+	}
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	g, err := gate.New(gate.Options{
+		Upstream:    u,
+		Scaler:      gate.DeploymentScaler{Client: client, Namespace: ns, Name: name},
+		Models:      models,
+		Idle:        *idle,
+		Rules:       rules,
+		WakeTimeout: *wakeTimeout,
+		Metrics:     gate.NewMetrics(reg),
+		Log:         log,
+	})
+	if err != nil {
+		return err
+	}
+	log.Info("starting", "version", version, "upstream", u.String(), "deployment", *deployment, "models", len(models), "idle", *idle, "rules", len(rules))
+
+	admin := http.NewServeMux()
+	admin.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+	admin.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	admin.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(g.Status())
+	})
+	servers := []*http.Server{
+		{Addr: *listen, Handler: g, ReadHeaderTimeout: 10 * time.Second},
+		{Addr: *adminAddr, Handler: admin, ReadHeaderTimeout: 10 * time.Second},
+	}
+	errc := make(chan error, len(servers))
+	for _, s := range servers {
+		go func() {
+			if err := s.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+				errc <- err
+			}
+		}()
+	}
+	go g.Run(ctx)
+
+	select {
+	case <-ctx.Done():
+	case err = <-errc:
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, s := range servers {
+		_ = s.Shutdown(shutdownCtx)
+	}
 	return err
 }
 
