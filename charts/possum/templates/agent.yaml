@@ -75,6 +75,8 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: {drop: [ALL], add: [SYS_BOOT]}
+            # The default containerd AppArmor profile denies D-Bus, which the agent needs for logind.
+            appArmorProfile: {type: Unconfined}
           volumeMounts:
             - {name: dbus, mountPath: /run/dbus/system_bus_socket}
       volumes:
