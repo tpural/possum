@@ -178,6 +178,7 @@ func runGate(ctx context.Context, args []string) error {
 		return err
 	})
 	wakeTimeout := fs.Duration("wake-timeout", 15*time.Minute, "how long a request waits for the backend")
+	prewarm := fs.Duration("prewarm-on-models", 0, "start waking the backend when a client lists models and keep it up this long; 0 disables")
 	kubeconfig := fs.String("kubeconfig", "", "kubeconfig path; in-cluster config when empty")
 	klog.InitFlags(fs)
 	_ = fs.Parse(args)
@@ -204,14 +205,15 @@ func runGate(ctx context.Context, args []string) error {
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	g, err := gate.New(gate.Options{
-		Upstream:    u,
-		Scaler:      gate.DeploymentScaler{Client: client, Namespace: ns, Name: name},
-		Models:      models,
-		Idle:        *idle,
-		Rules:       rules,
-		WakeTimeout: *wakeTimeout,
-		Metrics:     gate.NewMetrics(reg),
-		Log:         log,
+		Upstream:        u,
+		Scaler:          gate.DeploymentScaler{Client: client, Namespace: ns, Name: name},
+		Models:          models,
+		Idle:            *idle,
+		Rules:           rules,
+		WakeTimeout:     *wakeTimeout,
+		PrewarmOnModels: *prewarm,
+		Metrics:         gate.NewMetrics(reg),
+		Log:             log,
 	})
 	if err != nil {
 		return err
@@ -221,6 +223,21 @@ func runGate(ctx context.Context, args []string) error {
 	admin := http.NewServeMux()
 	admin.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	admin.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	admin.HandleFunc("POST /wake", func(w http.ResponseWriter, r *http.Request) {
+		d := *idle
+		if v := r.URL.Query().Get("for"); v != "" {
+			var perr error
+			if d, perr = time.ParseDuration(v); perr != nil || d <= 0 || d > 24*time.Hour {
+				http.Error(w, "for must be a duration between 0 and 24h", http.StatusBadRequest)
+				return
+			}
+		}
+		log.Info("wake requested", "for", d, "remote", r.RemoteAddr)
+		g.Prewarm(d)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(g.Status())
+	})
 	admin.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(g.Status())

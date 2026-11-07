@@ -25,15 +25,18 @@ type Scaler interface {
 
 // Options configures a Gate.
 type Options struct {
-	Upstream     *url.URL
-	Scaler       Scaler
-	Models       []Model
-	Idle         time.Duration
-	Rules        []Rule
-	WakeTimeout  time.Duration
-	PollInterval time.Duration
-	Metrics      *Metrics
-	Log          logr.Logger
+	Upstream    *url.URL
+	Scaler      Scaler
+	Models      []Model
+	Idle        time.Duration
+	Rules       []Rule
+	WakeTimeout time.Duration
+	// PrewarmOnModels starts waking the backend in the background when a client
+	// lists models, and keeps it up for this long. Zero disables it.
+	PrewarmOnModels time.Duration
+	PollInterval    time.Duration
+	Metrics         *Metrics
+	Log             logr.Logger
 }
 
 // Gate is an http.Handler that proxies to the upstream, waking it first when needed.
@@ -45,6 +48,7 @@ type Gate struct {
 	inflight    atomic.Int64
 	awakeUntil  atomic.Int64
 	lastRequest atomic.Int64
+	prewarming  atomic.Bool
 
 	wakeMu sync.Mutex
 }
@@ -78,6 +82,9 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && (r.URL.Path == "/v1/models" || r.URL.Path == "/models") {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(g.models)
+		if g.opts.PrewarmOnModels > 0 {
+			g.Prewarm(g.opts.PrewarmOnModels)
+		}
 		return
 	}
 
@@ -97,6 +104,21 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g.proxy.ServeHTTP(w, r)
+}
+
+// Prewarm keeps the backend up for at least d and starts waking it without
+// waiting for it to become ready.
+func (g *Gate) Prewarm(d time.Duration) {
+	g.keepAwake(d)
+	if !g.prewarming.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer g.prewarming.Store(false)
+		if err := g.wake(context.Background()); err != nil {
+			g.opts.Log.Error(err, "prewarm backend")
+		}
+	}()
 }
 
 // Run scales the backend to zero once it has been idle for the configured period.

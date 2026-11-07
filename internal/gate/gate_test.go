@@ -306,3 +306,33 @@ func TestLongestDeadlineWins(t *testing.T) {
 		t.Fatalf("scales = %v, want [0]", h)
 	}
 }
+
+func TestPrewarmOnModels(t *testing.T) {
+	s := &fakeScaler{bootTime: 300 * time.Millisecond}
+	g := newTestGate(t, s, echo(), time.Millisecond, 2*time.Second)
+	g.opts.PrewarmOnModels = time.Hour
+
+	start := time.Now()
+	for range 3 {
+		g.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	}
+	if time.Since(start) > 150*time.Millisecond {
+		t.Fatal("model listing waited for the backend")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, ready, _ := s.Replicas(context.Background()); ready > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("backend never woke")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if h := s.history(); len(h) != 1 || h[0] != 1 {
+		t.Fatalf("scales = %v, want one wake", h)
+	}
+	if time.Until(g.AwakeUntil()) < 59*time.Minute {
+		t.Fatalf("awake until %v, want about an hour", g.AwakeUntil())
+	}
+}

@@ -8,8 +8,10 @@ can then power off too.
 client ──▶ possum gate ──▶ backend Service ──▶ backend Deployment (0 or 1 replicas)
 ```
 
-- **Model listings never wake anything.** `GET /v1/models` and `/models` are answered from the
+- **Model listings don't wake anything by default.** `GET /v1/models` and `/models` are answered from the
   llama-swap config file (`--models-config`). UIs like open-webui can list models while the GPU sleeps.
+  With `--prewarm-on-models`, a listing still answers at once but also starts waking the backend in the
+  background. Opening the UI then gets the machine booting while you type.
 - **The first real request wakes the backend.** The gate scales the Deployment to 1, holds the request
   until a replica is ready and reachable (up to `--wake-timeout`), and then proxies it. Concurrent
   requests share one wake. Responses stream, so server-sent events work.
@@ -19,6 +21,8 @@ client ──▶ possum gate ──▶ backend Service ──▶ backend Deploym
   by host, client address range, or header, and sets how long the backend stays up after that request.
   The first matching rule applies, and requests that match no rule use `--idle`. A request never
   shortens an existing deadline: an agent's short window can't end your longer interactive one.
+- **Wake on demand.** `POST /wake?for=2h` on the admin port wakes the backend and keeps it up for that
+  long (default `--idle`). Point a CronJob or a phone shortcut at it.
 - **Health, status and metrics** are on a separate port (`--admin-addr`): `/healthz`, `/status`, plus `/metrics` with
   `possum_gate_wakes_total`, `possum_gate_sleeps_total`, `possum_gate_wake_seconds` and
   `possum_gate_inflight_requests`.
@@ -33,6 +37,7 @@ client ──▶ possum gate ──▶ backend Service ──▶ backend Deploym
 | `--idle` | `30m` | Scale to zero after this long without requests |
 | `--idle-rule` | | Repeatable `<kind> <pattern> <duration>`, where kind is `host`, `cidr` or `header` (`<Name>=<regexp>`) |
 | `--wake-timeout` | `15m` | How long a request waits for the backend |
+| `--prewarm-on-models` | `0` | Start waking the backend when a client lists models, and keep it up this long; `0` disables |
 | `--listen` | `:8080` | Proxy address |
 | `--admin-addr` | `:9090` | Health and metrics address |
 
