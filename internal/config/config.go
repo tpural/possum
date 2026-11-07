@@ -42,11 +42,14 @@ type Timeouts struct {
 // NodeGroup is a set of interchangeable nodes sharing one power driver.
 // DryRun and Timeouts fall back to the top-level values when unset.
 type NodeGroup struct {
-	Name     string            `json:"name"`
-	MinSize  int               `json:"minSize"`
-	MaxSize  int               `json:"maxSize"`
-	DryRun   *bool             `json:"dryRun,omitempty"`
-	Timeouts Timeouts          `json:"timeouts"`
+	Name     string   `json:"name"`
+	MinSize  int      `json:"minSize"`
+	MaxSize  int      `json:"maxSize"`
+	DryRun   *bool    `json:"dryRun,omitempty"`
+	Timeouts Timeouts `json:"timeouts"`
+
+	ScaleDownUnneededTime metav1.Duration `json:"scaleDownUnneededTime,omitempty"`
+
 	Driver   Driver            `json:"driver"`
 	Template *Template         `json:"template,omitempty"`
 	Labels   map[string]string `json:"labels,omitempty"`
