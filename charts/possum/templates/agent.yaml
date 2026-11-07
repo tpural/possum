@@ -1,0 +1,85 @@
+{{- if .Values.agent.enabled }}
+{{- $nodes := include "possum.nodeNames" . | fromJsonArray }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "possum.fullname" . }}-agent
+  labels: {{- include "possum.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "possum.fullname" . }}-agent
+  labels: {{- include "possum.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "possum.fullname" . }}-agent
+  labels: {{- include "possum.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "possum.fullname" . }}-agent
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "possum.fullname" . }}-agent
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "possum.fullname" . }}-agent
+  labels: {{- include "possum.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels: {{- include "possum.selector" (dict "root" . "component" "agent") | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "possum.selector" (dict "root" . "component" "agent") | nindent 8 }}
+      annotations:
+        cluster-autoscaler.kubernetes.io/enable-ds-eviction: "false"
+    spec:
+      serviceAccountName: {{ include "possum.fullname" . }}-agent
+      hostNetwork: true
+      priorityClassName: system-node-critical
+      securityContext:
+        runAsUser: 0
+        seccompProfile: {type: RuntimeDefault}
+      tolerations:
+        - operator: Exists
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: {{- toYaml (default (list "none") $nodes) | nindent 22 }}
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+      containers:
+        - name: agent
+          image: {{ include "possum.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [agent]
+          env:
+            - name: NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+          resources: {{- toYaml .Values.agent.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL], add: [SYS_BOOT]}
+          volumeMounts:
+            - {name: dbus, mountPath: /run/dbus/system_bus_socket}
+      volumes:
+        - name: dbus
+          hostPath:
+            path: {{ .Values.agent.dbusSocket }}
+            type: Socket
+{{- end }}

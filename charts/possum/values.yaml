@@ -1,0 +1,70 @@
+image:
+  repository: ghcr.io/tpural/possum
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# PossumConfig without apiVersion and kind. See docs/configuration.md.
+config:
+  dryRun: true
+  timeouts: {}
+  nodeGroups: []
+  #  - name: pi-workers
+  #    minSize: 1
+  #    maxSize: 3
+  #    driver:
+  #      name: unifi
+  #      config:
+  #        url: https://192.168.1.2
+  #        insecureSkipVerify: true
+  #    nodes:
+  #      - name: pi-1
+  #        target: "74:ac:b9:00:00:01/1"
+
+# Driver credentials, exposed to the provider as POSSUM_UNIFI_USERNAME and POSSUM_UNIFI_PASSWORD.
+credentials:
+  existingSecret: ""
+  username: ""
+  password: ""
+
+provider:
+  resources:
+    requests: {cpu: 10m, memory: 32Mi}
+    limits: {memory: 128Mi}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  logLevel: 2
+
+agent:
+  enabled: true
+  dbusSocket: /run/dbus/system_bus_socket
+  resources:
+    requests: {cpu: 5m, memory: 16Mi}
+    limits: {memory: 64Mi}
+
+autoscaler:
+  enabled: true
+  image:
+    repository: registry.k8s.io/autoscaling/cluster-autoscaler
+    tag: v1.36.2
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 512Mi}
+  nodeSelector: {}
+  tolerations: []
+  args:
+    scale-down-unneeded-time: 10m
+    scale-down-delay-after-add: 10m
+    max-node-provision-time: 10m
+    expander: least-waste
+    skip-nodes-with-local-storage: "false"
+    v: "2"
+
+# Only the bundled autoscaler may call the gRPC API; the status port stays open.
+networkPolicy:
+  enabled: true
+
+httpRoute:
+  enabled: false
+  hostnames: []
+  parentRefs: []

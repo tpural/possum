@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="10">
+<title>POSSUM</title>
+<style>
+  :root { --bg: #faf7f2; --fg: #1d1a22; --muted: #6b6475; --line: #e4dde9; --accent: #9b6fd1;
+          --on: #2f9e5b; --off: #8a8494; --busy: #d18b2f; --bad: #c8453c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #17141c; --fg: #efe9f5; --muted: #a39cad; --line: #2e2836; }
+  }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+  h1 { margin: 0 0 4px; font-size: 28px; letter-spacing: .5px; }
+  .sub { color: var(--muted); margin-bottom: 24px; }
+  .banner { background: var(--accent); color: #fff; padding: 8px 12px; border-radius: 8px; margin-bottom: 20px; }
+  h2 { font-size: 18px; margin: 28px 0 8px; }
+  .wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 13px; }
+  .pill { display: inline-block; padding: 1px 10px; border-radius: 999px; color: #fff; font-size: 13px; }
+  .Running { background: var(--on); } .Off { background: var(--off); }
+  .Booting, .ShuttingDown { background: var(--busy); } .Unknown { background: var(--bad); }
+  .msg { color: var(--muted); white-space: normal; }
+  code { font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>POSSUM</h1>
+  <div class="sub">Down, but not out.</div>
+  {{if .DryRun}}<div class="banner">Dry run: POSSUM records what it would do but never changes power.</div>{{end}}
+  {{range $g := .Groups}}
+  <h2>{{$g.Name}} <span class="sub">{{$g.Target}} on · min {{$g.MinSize}} · max {{$g.MaxSize}}</span></h2>
+  <div class="wrap"><table>
+    <tr><th>Node</th><th>Phase</th><th>For</th><th>Target</th><th>Power</th><th>Message</th></tr>
+    {{range $.Members}}{{if eq .Group $g.Name}}
+    <tr>
+      <td>{{.Name}}</td>
+      <td><span class="pill {{.Phase}}">{{.Phase}}</span></td>
+      <td>{{ago .Since}}</td>
+      <td><code>{{.Target}}</code></td>
+      <td>{{.Power}}</td>
+      <td class="msg">{{.Message}}</td>
+    </tr>
+    {{end}}{{end}}
+  </table></div>
+  {{end}}
+</main>
+</body>
+</html>

@@ -1,0 +1,139 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "possum.fullname" . }}
+  labels: {{- include "possum.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "possum.fullname" . }}
+  labels: {{- include "possum.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch, patch, delete]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "possum.fullname" . }}
+  labels: {{- include "possum.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "possum.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "possum.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "possum.fullname" . }}
+  labels: {{- include "possum.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [possum-state]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "possum.fullname" . }}
+  labels: {{- include "possum.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "possum.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "possum.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "possum.fullname" . }}
+  labels: {{- include "possum.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "possum.selector" (dict "root" . "component" "provider") | nindent 4 }}
+  ports:
+    - name: grpc
+      port: 8086
+      targetPort: grpc
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "possum.fullname" . }}
+  labels: {{- include "possum.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {{- include "possum.selector" (dict "root" . "component" "provider") | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "possum.selector" (dict "root" . "component" "provider") | nindent 8 }}
+      annotations:
+        checksum/config: {{ toYaml .Values.config | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "possum.fullname" . }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: provider
+          image: {{ include "possum.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [provider, --config=/etc/possum/config.yaml, -v={{ .Values.provider.logLevel }}]
+          env:
+            - name: POD_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+            - name: POSSUM_UNIFI_USERNAME
+              valueFrom: {secretKeyRef: {name: {{ include "possum.secretName" . }}, key: username, optional: true}}
+            - name: POSSUM_UNIFI_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ include "possum.secretName" . }}, key: password, optional: true}}
+          ports:
+            - {name: grpc, containerPort: 8086}
+            - {name: http, containerPort: 8080}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+          resources: {{- toYaml .Values.provider.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/possum, readOnly: true}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "possum.fullname" . }}
+      {{- with .Values.provider.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.provider.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.provider.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
