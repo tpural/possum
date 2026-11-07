@@ -26,7 +26,7 @@ func (f *Fleet) TemplateNode(ctx context.Context, groupName string) (*corev1.Nod
 			continue
 		}
 		if node, err := f.getNode(ctx, m.Name); err == nil {
-			return templateFromNode(groupName, node, g.cfg.Labels), nil
+			return templateFromNode(groupName, node, g.cfg.Labels, g.cfg.Taints), nil
 		}
 	}
 	t := g.cfg.Template
@@ -41,10 +41,11 @@ func (f *Fleet) TemplateNode(ctx context.Context, groupName string) (*corev1.Nod
 		corev1.ResourceMemory: t.Memory,
 		corev1.ResourcePods:   *resource.NewQuantity(t.Pods, resource.DecimalSI),
 	}
-	return newTemplate(groupName, labels, nil, res, res), nil
+	maps.Copy(res, t.Resources)
+	return newTemplate(groupName, labels, g.cfg.Taints, res, res), nil
 }
 
-func templateFromNode(group string, node *corev1.Node, extra map[string]string) *corev1.Node {
+func templateFromNode(group string, node *corev1.Node, extra map[string]string, groupTaints []corev1.Taint) *corev1.Node {
 	labels := maps.Clone(node.Labels)
 	delete(labels, corev1.LabelHostname)
 	maps.Copy(labels, extra)
@@ -54,6 +55,7 @@ func templateFromNode(group string, node *corev1.Node, extra map[string]string) 
 			taints = append(taints, t)
 		}
 	}
+	taints, _ = withTaints(taints, groupTaints)
 	return newTemplate(group, labels, taints, node.Status.Capacity, node.Status.Allocatable)
 }
 

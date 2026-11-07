@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"syscall"
 	"time"
@@ -89,7 +90,7 @@ func (f *Fleet) reconcileMember(ctx context.Context, g *group, snap Member) {
 			f.setPhase(mm, PhaseOff, "")
 		case state == power.StateOn && mm.Phase != PhaseBooting:
 			f.setPhase(mm, PhaseBooting, "powered on, waiting for node")
-		case mm.Phase == PhaseBooting && time.Since(mm.Since) > f.opts.Config.Timeouts.Boot.Duration:
+		case mm.Phase == PhaseBooting && time.Since(mm.Since) > g.cfg.Timeouts.Boot.Duration:
 			mm.Message = msgBootTimeout
 		}
 	})
@@ -126,11 +127,25 @@ func (f *Fleet) patchNode(ctx context.Context, g *group, m *Member, node *corev1
 		}
 	}
 	patch := map[string]any{}
+	spec := map[string]any{}
 	if node.Spec.ProviderID == "" {
-		patch["spec"] = map[string]any{"providerID": m.ProviderID()}
+		spec["providerID"] = m.ProviderID()
 	}
+	if taints, changed := withTaints(node.Spec.Taints, g.cfg.Taints); changed {
+		spec["taints"] = taints
+	}
+	if len(spec) > 0 {
+		patch["spec"] = spec
+	}
+	meta := map[string]any{}
 	if len(labels) > 0 {
-		patch["metadata"] = map[string]any{"labels": labels}
+		meta["labels"] = labels
+	}
+	if ann := dryRunHold(node.Annotations, g.cfg.DryRunEnabled()); len(ann) > 0 {
+		meta["annotations"] = ann
+	}
+	if len(meta) > 0 {
+		patch["metadata"] = meta
 	}
 	if len(patch) == 0 {
 		return nil
@@ -141,6 +156,29 @@ func (f *Fleet) patchNode(ctx context.Context, g *group, m *Member, node *corev1
 	}
 	_, err = f.opts.Client.CoreV1().Nodes().Patch(ctx, node.Name, types.MergePatchType, b, metav1.PatchOptions{})
 	return err
+}
+
+// dryRunHold keeps the autoscaler from draining nodes of a dry-run group, and
+// removes that hold once the group goes live, unless someone else set it.
+func dryRunHold(have map[string]string, dryRun bool) map[string]any {
+	held := have[annotationDryRunHold] == "true"
+	switch {
+	case dryRun && !held:
+		return map[string]any{annotationScaleDownDisabled: "true", annotationDryRunHold: "true"}
+	case !dryRun && held:
+		return map[string]any{annotationScaleDownDisabled: nil, annotationDryRunHold: nil}
+	}
+	return nil
+}
+
+func withTaints(have, want []corev1.Taint) ([]corev1.Taint, bool) {
+	out := slices.Clone(have)
+	for _, w := range want {
+		if !slices.ContainsFunc(have, func(h corev1.Taint) bool { return h.MatchTaint(&w) }) {
+			out = append(out, w)
+		}
+	}
+	return out, len(out) != len(have)
 }
 
 func (f *Fleet) discover(ctx context.Context, g *group, mac string) (power.Target, error) {
@@ -254,7 +292,7 @@ func (f *Fleet) stopHost(ctx context.Context, g *group, m Member, node *corev1.N
 		return err
 	}
 	f.event(m.Name, corev1.EventTypeNormal, "ShutdownRequested", "asked the agent to power off the host")
-	return f.waitOffline(ctx, node.Name, addr)
+	return f.waitOffline(ctx, g, node.Name, addr)
 }
 
 func (f *Fleet) verifyTarget(ctx context.Context, g *group, m Member) error {
@@ -291,8 +329,8 @@ func (f *Fleet) clearShutdown(ctx context.Context, name string) error {
 
 // waitOffline returns once the host has both stopped answering on the network
 // and stopped renewing its node Lease for the offline grace period.
-func (f *Fleet) waitOffline(ctx context.Context, name, addr string) error {
-	t := f.opts.Config.Timeouts
+func (f *Fleet) waitOffline(ctx context.Context, g *group, name, addr string) error {
+	t := g.cfg.Timeouts
 	ctx, cancel := context.WithTimeout(ctx, t.Shutdown.Duration)
 	defer cancel()
 	var silentSince time.Time
@@ -350,7 +388,7 @@ func (f *Fleet) switchPower(ctx context.Context, g *group, t power.Target, want 
 	}
 	f.opts.Metrics.powerAction(g.cfg.Name, string(want))
 
-	ctx, cancel := context.WithTimeout(ctx, f.opts.Config.Timeouts.PowerSettle.Duration)
+	ctx, cancel := context.WithTimeout(ctx, g.cfg.Timeouts.PowerSettle.Duration)
 	defer cancel()
 	for {
 		s, err := g.driver.State(ctx, t)

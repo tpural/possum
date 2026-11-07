@@ -1,6 +1,5 @@
 {{- if .Values.autoscaler.enabled }}
 {{- $name := printf "%s-autoscaler" (include "possum.fullname" .) }}
-{{- $dryRun := ne (toString .Values.config.dryRun) "false" }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -114,7 +113,6 @@ spec:
             - --cloud-provider=externalgrpc
             - --cloud-config=/etc/autoscaler/cloud-config.yaml
             - --namespace={{ .Release.Namespace }}
-            - --scale-down-enabled={{ not $dryRun }}
             {{- range $k, $v := .Values.autoscaler.args }}
             - --{{ $k }}={{ $v }}
             {{- end }}

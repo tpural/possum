@@ -50,10 +50,13 @@ nodeGroups:
 |---|---|
 | `name` | Group name, used as the autoscaler node group ID. |
 | `minSize`, `maxSize` | Bounds on powered-on members. `maxSize` cannot exceed the number of nodes. |
+| `dryRun` | Overrides the top-level `dryRun` for this group. |
+| `timeouts` | Overrides any of the top-level timeouts for this group, e.g. a longer `powerSettle` for Wake-on-LAN. |
+| `taints` | Taints POSSUM keeps on member Nodes and adds to the scale-up template, so only pods that tolerate them can wake the group. |
 | `driver.name` | A registered driver: `unifi` or `fake`. |
 | `driver.config` | Driver settings, passed to the driver as-is. |
 | `labels` | Labels POSSUM applies to member Nodes. |
-| `template` | Node shape for scale-up simulation, used only when no member is running to copy from. |
+| `template` | Node shape for scale-up simulation, used only when no member is running to copy from. `template.resources` adds extended resources such as `nvidia.com/gpu`. |
 | `nodes[].name` | Node name, as registered by the kubelet. |
 | `nodes[].target` | Driver-specific power target. Optional when the driver can discover it. |
 | `nodes[].mac` | MAC address used for discovery and verification. Defaults to the agent's `possum.dev/mac` annotation. |
@@ -80,3 +83,26 @@ driver:
   after a 401, and backs off on 429.
 - **Network access.** The provider pod needs HTTPS access to the console. On a segmented network,
   allow the cluster subnet to reach the console on port 443.
+
+## Wake-on-LAN driver
+
+```yaml
+driver:
+  name: wol
+  config:
+    broadcast: 192.168.1.255:9   # directed broadcast of the target's subnet
+    probePort: 22                # TCP port used to tell whether the host is up
+    probeTimeout: 2s
+nodes:
+  - name: gpu-box
+    target: "d8:43:ae:24:7c:8a@192.168.1.10"
+```
+
+- **Targets.** The form is `<mac>@<host>`. `PowerOn` sends three magic packets. `PowerOff` does nothing,
+  because the agent has already shut the host down gracefully.
+- **State.** POSSUM infers on/off by probing `host:probePort`. A refused connection counts as on.
+- **Network.** Magic packets must originate on the target's network segment. Packets from a pod network are
+  normally dropped, so run the provider with `provider.hostNetwork: true` on a node in the same subnet.
+- **Machine setup.** Enable Wake-on-LAN in the firmware (on many boards: ErP disabled, wake by PCI-E
+  enabled) and in the OS (`ethtool -s <nic> wol g`, or netplan `wakeonlan: true`).
+- **Timeouts.** Booting takes longer than PoE, so set a longer group `timeouts.powerSettle` (e.g. `3m`).

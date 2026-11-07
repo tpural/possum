@@ -28,7 +28,6 @@ var page = template.Must(template.New("index.html").Funcs(template.FuncMap{
 
 // Report is the JSON document served at /api/status.
 type Report struct {
-	DryRun  bool              `json:"dryRun"`
 	Groups  []Group           `json:"groups"`
 	Members []provider.Member `json:"members"`
 }
@@ -36,6 +35,7 @@ type Report struct {
 // Group summarises a node group.
 type Group struct {
 	Name    string `json:"name"`
+	DryRun  bool   `json:"dryRun"`
 	MinSize int    `json:"minSize"`
 	MaxSize int    `json:"maxSize"`
 	Target  int    `json:"targetSize"`
@@ -65,10 +65,10 @@ func Handler(f *provider.Fleet, gatherer prometheus.Gatherer) http.Handler {
 }
 
 func report(f *provider.Fleet) Report {
-	r := Report{DryRun: f.DryRun(), Members: f.Members()}
+	r := Report{Members: f.Members()}
 	for _, g := range f.Groups() {
 		size, _ := f.TargetSize(g.Name)
-		r.Groups = append(r.Groups, Group{Name: g.Name, MinSize: g.MinSize, MaxSize: g.MaxSize, Target: size})
+		r.Groups = append(r.Groups, Group{Name: g.Name, DryRun: f.DryRun(g.Name), MinSize: g.MinSize, MaxSize: g.MaxSize, Target: size})
 	}
 	return r
 }
