@@ -109,7 +109,7 @@ func (f *Fleet) reconcileAsleep(ctx context.Context, g *group, snap Member, node
 		return
 	}
 	if !stale {
-		if err := f.patchTaints(ctx, node, withoutTaints(node.Spec.Taints, TaintAsleep, toBeDeletedTaint)); err != nil {
+		if err := f.patchTaints(ctx, node, withoutTaints(node.Spec.Taints, TaintAsleep, toBeDeletedTaint), true); err != nil {
 			f.opts.Log.Error(err, "remove asleep taint", "node", node.Name)
 			return
 		}
@@ -270,10 +270,30 @@ func (f *Fleet) shutdown(ctx context.Context, g *group, name string) {
 		if cerr := f.clearShutdown(ctx, name); cerr != nil {
 			f.opts.Log.Error(cerr, "clear shutdown annotation", "node", name)
 		}
+		if rerr := f.releaseNode(ctx, name); rerr != nil {
+			f.opts.Log.Error(rerr, "release node from scale-down", "node", name)
+		}
 		f.update(name, func(mm *Member) { f.setPhase(mm, PhaseUnknown, "shutdown aborted: "+err.Error()) })
 	}
 	f.save(ctx)
 	f.Trigger()
+}
+
+// releaseNode undoes the autoscaler's scale-down marks on a node that stays up.
+// The autoscaler only cleans them when DeleteNodes fails, but POSSUM accepts the
+// request and shuts down in the background.
+func (f *Fleet) releaseNode(ctx context.Context, name string) error {
+	node, err := f.getNode(ctx, name)
+	if isNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !hasTaint(node, toBeDeletedTaint) {
+		return nil
+	}
+	return f.patchTaints(ctx, node, withoutTaints(node.Spec.Taints, toBeDeletedTaint), true)
 }
 
 func (f *Fleet) runShutdown(ctx context.Context, g *group, name string) error {
@@ -321,7 +341,7 @@ func (f *Fleet) finishSuspend(ctx context.Context, name string) error {
 		return errRetry{fmt.Errorf("get node: %w", err)}
 	}
 	if taints, changed := withTaints(node.Spec.Taints, []corev1.Taint{asleepTaint}); changed {
-		if err := f.patchTaints(ctx, node, taints); err != nil {
+		if err := f.patchTaints(ctx, node, taints, false); err != nil {
 			return errRetry{fmt.Errorf("taint node asleep: %w", err)}
 		}
 	}
@@ -346,14 +366,20 @@ func withoutTaints(have []corev1.Taint, keys ...string) []corev1.Taint {
 	return slices.DeleteFunc(slices.Clone(have), func(t corev1.Taint) bool { return slices.Contains(keys, t.Key) })
 }
 
-// patchTaints replaces the node's taints, failing if the node changed since it was read.
-func (f *Fleet) patchTaints(ctx context.Context, node *corev1.Node, taints []corev1.Taint) error {
+// patchTaints replaces the node's taints, failing if the node changed since it
+// was read. With uncordon it also undoes the cordon the autoscaler sets before
+// a scale-down.
+func (f *Fleet) patchTaints(ctx context.Context, node *corev1.Node, taints []corev1.Taint, uncordon bool) error {
 	if taints == nil {
 		taints = []corev1.Taint{}
 	}
+	spec := map[string]any{"taints": taints}
+	if uncordon {
+		spec["unschedulable"] = nil
+	}
 	b, err := json.Marshal(map[string]any{
 		"metadata": map[string]any{"resourceVersion": node.ResourceVersion},
-		"spec":     map[string]any{"taints": taints},
+		"spec":     spec,
 	})
 	if err != nil {
 		return err

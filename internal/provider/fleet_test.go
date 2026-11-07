@@ -216,7 +216,10 @@ func TestDeleteNodesShutsDownGracefully(t *testing.T) {
 }
 
 func TestShutdownTimeoutLeavesPowerOn(t *testing.T) {
-	h := newHarness(t, testConfig, allOn(), node("pi-1", nil), node("pi-2", nil))
+	marked := node("pi-2", nil)
+	marked.Spec.Unschedulable = true
+	marked.Spec.Taints = []corev1.Taint{{Key: toBeDeletedTaint, Effect: corev1.TaintEffectNoSchedule}}
+	h := newHarness(t, testConfig, allOn(), node("pi-1", nil), marked)
 
 	if err := h.fleet.DeleteNodes(context.Background(), "pis", []string{"pi-2"}); err != nil {
 		t.Fatal(err)
@@ -232,6 +235,9 @@ func TestShutdownTimeoutLeavesPowerOn(t *testing.T) {
 	}
 	if _, ok := n.Annotations[AnnotationShutdown]; ok {
 		t.Fatal("shutdown annotation not cleared")
+	}
+	if n.Spec.Unschedulable || hasTaint(n, toBeDeletedTaint) {
+		t.Fatalf("node still marked for scale-down: taints = %v, unschedulable = %v", n.Spec.Taints, n.Spec.Unschedulable)
 	}
 }
 
@@ -533,6 +539,7 @@ func TestSuspendKeepsNodeAndWakes(t *testing.T) {
 	}
 
 	n.Spec.Taints = append(n.Spec.Taints, corev1.Taint{Key: toBeDeletedTaint, Effect: corev1.TaintEffectNoSchedule})
+	n.Spec.Unschedulable = true
 	if _, err := h.client.CoreV1().Nodes().Update(ctx, n, metav1.UpdateOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -547,8 +554,8 @@ func TestSuspendKeepsNodeAndWakes(t *testing.T) {
 		t.Fatalf("phase after wake = %s (%s)", p, h.fleet.member("pi-2").Message)
 	}
 	n, _ = h.node("pi-2")
-	if hasTaint(n, TaintAsleep) || hasTaint(n, toBeDeletedTaint) {
-		t.Fatalf("taints after wake = %v", n.Spec.Taints)
+	if hasTaint(n, TaintAsleep) || hasTaint(n, toBeDeletedTaint) || n.Spec.Unschedulable {
+		t.Fatalf("after wake: taints = %v, unschedulable = %v", n.Spec.Taints, n.Spec.Unschedulable)
 	}
 }
 
