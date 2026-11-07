@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -179,6 +180,7 @@ func runGate(ctx context.Context, args []string) error {
 	})
 	wakeTimeout := fs.Duration("wake-timeout", 15*time.Minute, "how long a request waits for the backend")
 	prewarm := fs.Duration("prewarm-on-models", 0, "start waking the backend when a client lists models and keep it up this long; 0 disables")
+	wakeURL := fs.String("wake-url", "", "URL to POST when scaling up from zero, e.g. http://possum.possum.svc:8080/api/groups/gpu/wake")
 	kubeconfig := fs.String("kubeconfig", "", "kubeconfig path; in-cluster config when empty")
 	klog.InitFlags(fs)
 	_ = fs.Parse(args)
@@ -212,6 +214,7 @@ func runGate(ctx context.Context, args []string) error {
 		Rules:           rules,
 		WakeTimeout:     *wakeTimeout,
 		PrewarmOnModels: *prewarm,
+		OnWake:          postHook(*wakeURL),
 		Metrics:         gate.NewMetrics(reg),
 		Log:             log,
 	})
@@ -314,4 +317,26 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func postHook(url string) func(context.Context) error {
+	if url == "" {
+		return nil
+	}
+	return func(ctx context.Context) error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+			return fmt.Errorf("POST %s: %s: %s", url, resp.Status, strings.TrimSpace(string(body)))
+		}
+		return nil
+	}
 }

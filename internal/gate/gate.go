@@ -34,9 +34,12 @@ type Options struct {
 	// PrewarmOnModels starts waking the backend in the background when a client
 	// lists models, and keeps it up for this long. Zero disables it.
 	PrewarmOnModels time.Duration
-	PollInterval    time.Duration
-	Metrics         *Metrics
-	Log             logr.Logger
+	// OnWake runs in the background whenever the backend is scaled up from zero,
+	// e.g. to power on its node without waiting for the cluster autoscaler.
+	OnWake       func(context.Context) error
+	PollInterval time.Duration
+	Metrics      *Metrics
+	Log          logr.Logger
 }
 
 // Gate is an http.Handler that proxies to the upstream, waking it first when needed.
@@ -170,6 +173,15 @@ func (g *Gate) wake(ctx context.Context) error {
 		g.opts.Metrics.wakes.Inc()
 		if err := g.opts.Scaler.Scale(ctx, 1); err != nil {
 			return err
+		}
+		if g.opts.OnWake != nil {
+			hookCtx, hookCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			go func() {
+				defer hookCancel()
+				if err := g.opts.OnWake(hookCtx); err != nil {
+					g.opts.Log.Error(err, "wake hook")
+				}
+			}()
 		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, g.opts.WakeTimeout)

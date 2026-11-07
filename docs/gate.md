@@ -23,6 +23,9 @@ client ──▶ possum gate ──▶ backend Service ──▶ backend Deploym
   shortens an existing deadline: an agent's short window can't end your longer interactive one.
 - **Wake on demand.** `POST /wake?for=2h` on the admin port wakes the backend and keeps it up for that
   long (default `--idle`). Point a CronJob or a phone shortcut at it.
+- **Wake the node too.** With `--wake-url`, the gate POSTs to that URL each time it scales up from zero.
+  Point it at the POSSUM wake API (`http://possum.possum.svc:8080/api/groups/gpu/wake`) to power the
+  node on in parallel with the scale-up, skipping the autoscaler's 30 second wait for new GPU pods.
 - **Health, status and metrics** are on a separate port (`--admin-addr`): `/healthz`, `/status`, plus `/metrics` with
   `possum_gate_wakes_total`, `possum_gate_sleeps_total`, `possum_gate_wake_seconds` and
   `possum_gate_inflight_requests`.
@@ -38,6 +41,7 @@ client ──▶ possum gate ──▶ backend Service ──▶ backend Deploym
 | `--idle-rule` | | Repeatable `<kind> <pattern> <duration>`, where kind is `host`, `cidr` or `header` (`<Name>=<regexp>`) |
 | `--wake-timeout` | `15m` | How long a request waits for the backend |
 | `--prewarm-on-models` | `0` | Start waking the backend when a client lists models, and keep it up this long; `0` disables |
+| `--wake-url` | | URL to POST when scaling up from zero, e.g. the POSSUM wake API |
 | `--listen` | `:8080` | Proxy address |
 | `--admin-addr` | `:9090` | Health and metrics address |
 

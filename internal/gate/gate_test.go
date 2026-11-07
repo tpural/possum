@@ -336,3 +336,26 @@ func TestPrewarmOnModels(t *testing.T) {
 		t.Fatalf("awake until %v, want about an hour", g.AwakeUntil())
 	}
 }
+
+func TestOnWakeRunsWhenScalingUp(t *testing.T) {
+	s := &fakeScaler{bootTime: 10 * time.Millisecond}
+	g := newTestGate(t, s, echo(), time.Hour, time.Second)
+	called := make(chan struct{}, 2)
+	g.opts.OnWake = func(context.Context) error {
+		called <- struct{}{}
+		return nil
+	}
+
+	for range 2 {
+		g.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
+	}
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("OnWake was not called")
+	}
+	time.Sleep(20 * time.Millisecond)
+	if len(called) != 0 {
+		t.Fatal("OnWake ran again while the backend was up")
+	}
+}

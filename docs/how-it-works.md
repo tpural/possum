@@ -80,6 +80,10 @@ before POSSUM can power it off.
   - `possum_driver_errors_total{driver}`
 - `:8080/` serves a status page and `:8080/api/status` the same data as JSON. `/healthz` and
   `/readyz` are for probes.
+- `POST :8080/api/groups/<group>/wake` powers on one member of the group unless one is already on or
+  coming up. It answers `202` when it started one, `200` when there was nothing to do, and `409` in dry
+  run. The gate's `--wake-url` calls it so a GPU node starts waking right away, instead of after the
+  autoscaler's 30 second wait for new GPU pods.
 
 ## Things to know before enabling scale-down
 
@@ -87,7 +91,7 @@ before POSSUM can power it off.
   aren't DaemonSets, such as CoreDNS or metrics-server. Either keep those pods off the managed
   nodes, give them PodDisruptionBudgets, or set `autoscaler.args.skip-nodes-with-system-pods: "false"`.
 - **Access.** The autoscaler runs in the provider pod and reaches it on `127.0.0.1`, so the gRPC API is never
-  exposed. Only the read-only status port (8080) is served. With `autoscaler.enabled: false` you bring your own
+  exposed. Only the status port (8080) is served; its one write, the wake API above, can only power nodes on. With `autoscaler.enabled: false` you bring your own
   autoscaler; the provider then listens on the network and you must secure that yourself.
 - **Agent privileges.** The agent runs as root with only `CAP_SYS_BOOT`, which logind requires to
   power off without polkit. It uses host networking so it can find the node's MAC address.

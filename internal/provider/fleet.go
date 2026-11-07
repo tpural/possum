@@ -300,6 +300,19 @@ func (f *Fleet) IncreaseSize(ctx context.Context, groupName string, delta int) e
 	return nil
 }
 
+// Wake powers on one member of the group unless one is already on or coming up,
+// so a workload that knows it needs the group can skip the autoscaler's delay.
+func (f *Fleet) Wake(ctx context.Context, groupName string) (bool, error) {
+	size, err := f.TargetSize(groupName)
+	if err != nil || size > 0 {
+		return false, err
+	}
+	if err := f.IncreaseSize(ctx, groupName, 1); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // DeleteNodes gracefully shuts down and powers off the named members.
 func (f *Fleet) DeleteNodes(ctx context.Context, groupName string, names []string) error {
 	g, err := f.group(groupName)
