@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -168,7 +169,13 @@ func runGate(ctx context.Context, args []string) error {
 	upstream := fs.String("upstream", "", "backend URL, e.g. http://llama-swap-backend.llama-swap.svc:8080")
 	deployment := fs.String("deployment", "", "backend Deployment as namespace/name")
 	modelsConfig := fs.String("models-config", "", "llama-swap config.yaml to answer /v1/models from")
-	idle := fs.Duration("idle", 30*time.Minute, "scale to zero after this long without requests")
+	idle := fs.Duration("idle", 30*time.Minute, "scale to zero after this long without requests, unless a rule matches")
+	var rules []gate.Rule
+	fs.Func("idle-rule", `per-source idle time, repeatable: "host llm.example.com 10m", "cidr 10.0.0.0/8 1h", "header User-Agent=^n8n 10m"`, func(s string) error {
+		r, err := gate.ParseRule(s)
+		rules = append(rules, r)
+		return err
+	})
 	wakeTimeout := fs.Duration("wake-timeout", 15*time.Minute, "how long a request waits for the backend")
 	kubeconfig := fs.String("kubeconfig", "", "kubeconfig path; in-cluster config when empty")
 	klog.InitFlags(fs)
@@ -200,6 +207,7 @@ func runGate(ctx context.Context, args []string) error {
 		Scaler:      gate.DeploymentScaler{Client: client, Namespace: ns, Name: name},
 		Models:      models,
 		Idle:        *idle,
+		Rules:       rules,
 		WakeTimeout: *wakeTimeout,
 		Metrics:     gate.NewMetrics(reg),
 		Log:         log,
@@ -207,11 +215,15 @@ func runGate(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	log.Info("starting", "version", version, "upstream", u.String(), "deployment", *deployment, "models", len(models), "idle", *idle)
+	log.Info("starting", "version", version, "upstream", u.String(), "deployment", *deployment, "models", len(models), "idle", *idle, "rules", len(rules))
 
 	admin := http.NewServeMux()
 	admin.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	admin.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	admin.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(g.Status())
+	})
 	servers := []*http.Server{
 		{Addr: *listen, Handler: g, ReadHeaderTimeout: 10 * time.Second},
 		{Addr: *adminAddr, Handler: admin, ReadHeaderTimeout: 10 * time.Second},

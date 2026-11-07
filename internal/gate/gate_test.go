@@ -239,3 +239,70 @@ func TestDeploymentScaler(t *testing.T) {
 		t.Fatalf("Replicas = %d, %d, %v", desired, ready, err)
 	}
 }
+
+func TestParseRule(t *testing.T) {
+	tests := []struct {
+		spec    string
+		req     func() *http.Request
+		match   bool
+		wantErr bool
+	}{
+		{"host llm.lan.example.com 10m", func() *http.Request {
+			r := httptest.NewRequest(http.MethodPost, "http://LLM.lan.example.com:8080/v1/chat/completions", nil)
+			return r
+		}, true, false},
+		{"host llm.lan.example.com 10m", func() *http.Request {
+			return httptest.NewRequest(http.MethodPost, "http://llama-swap.llama-swap.svc:8080/", nil)
+		}, false, false},
+		{"cidr 10.244.0.0/16 1h", func() *http.Request {
+			r := httptest.NewRequest(http.MethodPost, "/", nil)
+			r.RemoteAddr = "10.244.3.7:51234"
+			return r
+		}, true, false},
+		{"header User-Agent=^n8n 10m", func() *http.Request {
+			r := httptest.NewRequest(http.MethodPost, "/", nil)
+			r.Header.Set("User-Agent", "n8n/1.80")
+			return r
+		}, true, false},
+		{"host x", nil, false, true},
+		{"cidr nope 1h", nil, false, true},
+		{"header NoEquals 1h", nil, false, true},
+		{"color red 1h", nil, false, true},
+		{"host x 0s", nil, false, true},
+	}
+	for _, tt := range tests {
+		r, err := ParseRule(tt.spec)
+		if (err != nil) != tt.wantErr {
+			t.Fatalf("ParseRule(%q) err = %v", tt.spec, err)
+		}
+		if err == nil && r.Matches(tt.req()) != tt.match {
+			t.Errorf("%q match = %v, want %v", tt.spec, !tt.match, tt.match)
+		}
+	}
+}
+
+func TestLongestDeadlineWins(t *testing.T) {
+	agents, _ := ParseRule("header User-Agent=^agent 50ms")
+	s := &fakeScaler{desired: 1, ready: 1}
+	g := newTestGate(t, s, echo(), 10*time.Millisecond, time.Second)
+	g.opts.Rules = []Rule{agents}
+	chat, _ := ParseRule("host chat.example 300ms")
+	g.opts.Rules = append(g.opts.Rules, chat)
+
+	req := httptest.NewRequest(http.MethodPost, "http://chat.example/v1/chat/completions", nil)
+	g.ServeHTTP(httptest.NewRecorder(), req)
+	req = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("User-Agent", "agent/1")
+	g.ServeHTTP(httptest.NewRecorder(), req)
+
+	time.Sleep(80 * time.Millisecond)
+	g.sleepIfIdle(context.Background())
+	if len(s.history()) != 0 {
+		t.Fatal("the agent's short idle cut the chat's longer window short")
+	}
+	time.Sleep(260 * time.Millisecond)
+	g.sleepIfIdle(context.Background())
+	if h := s.history(); len(h) != 1 || h[0] != 0 {
+		t.Fatalf("scales = %v, want [0]", h)
+	}
+}

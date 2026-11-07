@@ -29,6 +29,7 @@ type Options struct {
 	Scaler       Scaler
 	Models       []Model
 	Idle         time.Duration
+	Rules        []Rule
 	WakeTimeout  time.Duration
 	PollInterval time.Duration
 	Metrics      *Metrics
@@ -41,8 +42,9 @@ type Gate struct {
 	proxy  *httputil.ReverseProxy
 	models []byte
 
-	inflight atomic.Int64
-	lastSeen atomic.Int64
+	inflight    atomic.Int64
+	awakeUntil  atomic.Int64
+	lastRequest atomic.Int64
 
 	wakeMu sync.Mutex
 }
@@ -51,6 +53,9 @@ type Gate struct {
 func New(opts Options) (*Gate, error) {
 	if opts.Upstream == nil || opts.Scaler == nil {
 		return nil, errors.New("gate: upstream and scaler are required")
+	}
+	if opts.Idle <= 0 {
+		return nil, errors.New("gate: idle must be positive")
 	}
 	if opts.PollInterval == 0 {
 		opts.PollInterval = 2 * time.Second
@@ -65,7 +70,7 @@ func New(opts Options) (*Gate, error) {
 	proxy := httputil.NewSingleHostReverseProxy(opts.Upstream)
 	proxy.FlushInterval = -1
 	g := &Gate{opts: opts, proxy: proxy, models: models}
-	g.touch()
+	g.keepAwake(opts.Idle)
 	return g, nil
 }
 
@@ -76,14 +81,15 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	idle := g.idleFor(r)
 	g.inflight.Add(1)
 	g.opts.Metrics.inflight.Inc()
 	defer func() {
-		g.touch()
+		g.keepAwake(idle)
 		g.inflight.Add(-1)
 		g.opts.Metrics.inflight.Dec()
 	}()
-	g.touch()
+	g.lastRequest.Store(time.Now().UnixNano())
 
 	if err := g.wake(r.Context()); err != nil {
 		g.opts.Log.Error(err, "wake backend")
@@ -95,7 +101,7 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // Run scales the backend to zero once it has been idle for the configured period.
 func (g *Gate) Run(ctx context.Context) {
-	t := time.NewTicker(min(g.opts.Idle/4, time.Minute))
+	t := time.NewTicker(min(g.shortestIdle()/4, time.Minute))
 	defer t.Stop()
 	for {
 		select {
@@ -108,7 +114,7 @@ func (g *Gate) Run(ctx context.Context) {
 }
 
 func (g *Gate) sleepIfIdle(ctx context.Context) {
-	if g.inflight.Load() > 0 || time.Since(g.last()) < g.opts.Idle {
+	if g.inflight.Load() > 0 || time.Now().Before(g.AwakeUntil()) {
 		return
 	}
 	g.wakeMu.Lock()
@@ -122,7 +128,7 @@ func (g *Gate) sleepIfIdle(ctx context.Context) {
 		return
 	}
 	g.opts.Metrics.sleeps.Inc()
-	g.opts.Log.Info("backend idle, scaled to zero", "idle", time.Since(g.last()).Round(time.Second))
+	g.opts.Log.Info("backend idle, scaled to zero", "lastRequest", time.Unix(0, g.lastRequest.Load()).UTC().Format(time.RFC3339))
 }
 
 func (g *Gate) wake(ctx context.Context) error {
@@ -177,5 +183,48 @@ func (g *Gate) reachable(ctx context.Context) error {
 	return c.Close()
 }
 
-func (g *Gate) touch()          { g.lastSeen.Store(time.Now().UnixNano()) }
-func (g *Gate) last() time.Time { return time.Unix(0, g.lastSeen.Load()) }
+// Status is a snapshot of the gate's state.
+type Status struct {
+	AwakeUntil  time.Time `json:"awakeUntil"`
+	LastRequest time.Time `json:"lastRequest"`
+	Inflight    int64     `json:"inflight"`
+}
+
+// Status reports when the backend may next sleep and what is in flight.
+func (g *Gate) Status() Status {
+	return Status{
+		AwakeUntil:  g.AwakeUntil().UTC(),
+		LastRequest: time.Unix(0, g.lastRequest.Load()).UTC(),
+		Inflight:    g.inflight.Load(),
+	}
+}
+
+// AwakeUntil is when the backend may next be scaled to zero if no more requests arrive.
+func (g *Gate) AwakeUntil() time.Time { return time.Unix(0, g.awakeUntil.Load()) }
+
+func (g *Gate) idleFor(r *http.Request) time.Duration {
+	for _, rule := range g.opts.Rules {
+		if rule.Matches(r) {
+			return rule.Idle
+		}
+	}
+	return g.opts.Idle
+}
+
+func (g *Gate) keepAwake(idle time.Duration) {
+	until := time.Now().Add(idle).UnixNano()
+	for {
+		cur := g.awakeUntil.Load()
+		if until <= cur || g.awakeUntil.CompareAndSwap(cur, until) {
+			return
+		}
+	}
+}
+
+func (g *Gate) shortestIdle() time.Duration {
+	d := g.opts.Idle
+	for _, r := range g.opts.Rules {
+		d = min(d, r.Idle)
+	}
+	return d
+}
