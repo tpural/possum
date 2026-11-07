@@ -134,6 +134,4 @@ spec:
       {{- with .Values.provider.tolerations }}
       tolerations: {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.provider.affinity }}
-      affinity: {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{- include "possum.affinity" (dict "root" . "affinity" .Values.provider.affinity) | nindent 6 }}

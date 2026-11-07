@@ -135,4 +135,5 @@ spec:
       {{- with .Values.autoscaler.tolerations }}
       tolerations: {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- include "possum.affinity" (dict "root" . "affinity" .Values.autoscaler.affinity) | nindent 6 }}
 {{- end }}
