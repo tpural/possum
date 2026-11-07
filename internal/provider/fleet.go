@@ -20,9 +20,12 @@ import (
 )
 
 const (
-	ProviderIDPrefix   = "possum://"
-	AnnotationShutdown = "possum.dev/shutdown"
-	AnnotationMAC      = "possum.dev/mac"
+	ProviderIDPrefix       = "possum://"
+	AnnotationShutdown     = "possum.dev/shutdown"
+	AnnotationShutdownMode = "possum.dev/shutdown-mode"
+	AnnotationMAC          = "possum.dev/mac"
+	ShutdownModeSuspend    = "suspend"
+	TaintAsleep            = "possum.dev/asleep"
 
 	annotationScaleDownDisabled = "cluster-autoscaler.kubernetes.io/scale-down-disabled"
 	annotationDryRunHold        = "possum.dev/dry-run-hold"

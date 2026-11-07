@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -13,6 +14,15 @@ import (
 var ErrNoTemplate = errors.New("no running node or template to build a node template from")
 
 const toBeDeletedTaint = "ToBeDeletedByClusterAutoscaler"
+
+// transientTaints describe a node's current state rather than its shape.
+var transientTaints = []string{
+	toBeDeletedTaint,
+	TaintAsleep,
+	corev1.TaintNodeUnschedulable,
+	corev1.TaintNodeNotReady,
+	corev1.TaintNodeUnreachable,
+}
 
 // TemplateNode returns the shape of a new node in the group, copied from a
 // running member when there is one and built from the configured template otherwise.
@@ -46,12 +56,13 @@ func (f *Fleet) TemplateNode(ctx context.Context, groupName string) (*corev1.Nod
 }
 
 func templateFromNode(group string, node *corev1.Node, extra map[string]string, groupTaints []corev1.Taint) *corev1.Node {
-	labels := maps.Clone(node.Labels)
+	labels := map[string]string{}
+	maps.Copy(labels, node.Labels)
 	delete(labels, corev1.LabelHostname)
 	maps.Copy(labels, extra)
 	var taints []corev1.Taint
 	for _, t := range node.Spec.Taints {
-		if t.Key != toBeDeletedTaint && t.Key != corev1.TaintNodeUnschedulable {
+		if !slices.Contains(transientTaints, t.Key) {
 			taints = append(taints, t)
 		}
 	}

@@ -52,9 +52,10 @@ nodeGroups:
 | `minSize`, `maxSize` | Bounds on powered-on members. `maxSize` cannot exceed the number of nodes. |
 | `dryRun` | Overrides the top-level `dryRun` for this group. |
 | `timeouts` | Overrides any of the top-level timeouts for this group, e.g. a longer `powerSettle` for Wake-on-LAN. |
+| `suspend` | Suspend members to RAM instead of powering them off. The Node stays registered, so waking takes seconds rather than a full boot. Needs a driver that can wake a sleeping host, such as `wol`. |
 | `scaleDownUnneededTime` | How long a member must be unneeded before the autoscaler powers it off, overriding the autoscaler's `--scale-down-unneeded-time` for this group (e.g. `45m` for a GPU box you want to linger). |
 | `taints` | Taints POSSUM keeps on member Nodes and adds to the scale-up template, so only pods that tolerate them can wake the group. |
-| `driver.name` | A registered driver: `unifi` or `fake`. |
+| `driver.name` | A registered driver: `unifi`, `wol` or `fake`. |
 | `driver.config` | Driver settings, passed to the driver as-is. |
 | `labels` | Labels POSSUM applies to member Nodes. |
 | `template` | Node shape for scale-up simulation, used only when no member is running to copy from. `template.resources` adds extended resources such as `nvidia.com/gpu`. |
@@ -107,3 +108,6 @@ nodes:
 - **Machine setup.** Enable Wake-on-LAN in the firmware (on many boards: ErP disabled, wake by PCI-E
   enabled) and in the OS (`ethtool -s <nic> wol g`, or netplan `wakeonlan: true`).
 - **Timeouts.** Booting takes longer than PoE, so set a longer group `timeouts.powerSettle` (e.g. `3m`).
+- **Suspend.** Wake-on-LAN usually works from suspend-to-RAM too (check `cat /sys/power/mem_sleep` shows
+  `[deep]`). With `suspend: true` a wake takes seconds. On NVIDIA hosts, keep `nvidia-suspend` and
+  `nvidia-resume` enabled.

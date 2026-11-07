@@ -40,13 +40,15 @@ type Timeouts struct {
 }
 
 // NodeGroup is a set of interchangeable nodes sharing one power driver.
-// DryRun and Timeouts fall back to the top-level values when unset.
+// DryRun and Timeouts fall back to the top-level values when unset. Suspend
+// puts members to sleep instead of powering them off; their Nodes stay registered.
 type NodeGroup struct {
 	Name     string   `json:"name"`
 	MinSize  int      `json:"minSize"`
 	MaxSize  int      `json:"maxSize"`
 	DryRun   *bool    `json:"dryRun,omitempty"`
 	Timeouts Timeouts `json:"timeouts"`
+	Suspend  bool     `json:"suspend,omitempty"`
 
 	ScaleDownUnneededTime metav1.Duration `json:"scaleDownUnneededTime,omitempty"`
 

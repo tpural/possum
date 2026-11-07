@@ -83,3 +83,25 @@ func TestBootTime(t *testing.T) {
 		t.Fatalf("boot time %v out of range", bt)
 	}
 }
+
+func TestHandleSuspendsWhenAsked(t *testing.T) {
+	var powerOffs, suspends int
+	a := &Agent{
+		Log:      logr.Discard(),
+		Booted:   time.Now().Add(-time.Hour),
+		PowerOff: func(context.Context) error { powerOffs++; return nil },
+		Suspend:  func(context.Context) error { suspends++; return nil },
+	}
+	ctx := context.Background()
+	n := requested(time.Now())
+	n.Annotations[provider.AnnotationShutdownMode] = provider.ShutdownModeSuspend
+
+	a.handle(ctx, n)
+	a.handle(ctx, n)
+	a.handle(ctx, &corev1.Node{})
+	a.handle(ctx, n)
+
+	if powerOffs != 0 || suspends != 2 {
+		t.Fatalf("powerOffs=%d suspends=%d, want 0 and 2", powerOffs, suspends)
+	}
+}

@@ -290,6 +290,7 @@ func runAgent(ctx context.Context, args []string) error {
 		Client:   client,
 		NodeName: *nodeName,
 		PowerOff: agent.LogindPowerOff(*bus),
+		Suspend:  agent.LogindSuspend(*bus),
 		Log:      klog.NewKlogr().WithName("agent").WithValues("node", *nodeName),
 	}
 	return a.Run(ctx)
