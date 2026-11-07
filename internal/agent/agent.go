@@ -1,4 +1,4 @@
-// Package agent runs on managed nodes and powers the host off when the provider asks.
+// Package agent runs on managed nodes and powers the host off or suspends it when the provider asks.
 package agent
 
 import (
@@ -26,6 +26,7 @@ type Agent struct {
 	Client   kubernetes.Interface
 	NodeName string
 	PowerOff func(ctx context.Context) error
+	Suspend  func(ctx context.Context) error
 	Log      logr.Logger
 	// Booted overrides the host boot time, which is read from /proc/stat when zero.
 	Booted time.Time
@@ -84,9 +85,13 @@ func (a *Agent) handle(ctx context.Context, obj any) {
 		a.Log.Info("ignoring shutdown request from before this boot", "requestedAt", at, "booted", booted)
 		return
 	}
-	a.Log.Info("shutdown requested, powering off host", "requestedAt", at)
-	if err := a.PowerOff(ctx); err != nil {
-		a.Log.Error(err, "power off")
+	op, verb := a.PowerOff, "power off"
+	if node.Annotations[provider.AnnotationShutdownMode] == provider.ShutdownModeSuspend {
+		op, verb = a.Suspend, "suspend"
+	}
+	a.Log.Info("shutdown requested", "action", verb, "requestedAt", at)
+	if err := op(ctx); err != nil {
+		a.Log.Error(err, verb)
 		return
 	}
 	a.shutting = true

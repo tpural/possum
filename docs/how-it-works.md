@@ -49,6 +49,19 @@ Each member is in one phase at a time:
 5. Power off through the driver, then poll until the driver reports `off`.
 6. Remove the annotation and delete the Node object.
 
+### Suspend
+
+In a group with `suspend: true`, the agent calls `org.freedesktop.login1.Manager.Suspend` instead (the
+annotation `possum.dev/shutdown-mode=suspend` tells it which). Steps 5 and 6 change:
+
+- The driver is not asked to cut power.
+- The Node is kept and tainted `possum.dev/asleep:NoSchedule`, so it stays registered with its pods while
+  the host sleeps. The autoscaler's own `ToBeDeletedByClusterAutoscaler` taint stays on it too.
+
+To wake a sleeping member, POSSUM asks the driver to power it on. Once the node Lease is renewed again,
+it removes both taints and the member is `Running`. If the Lease doesn't come back within `timeouts.boot`,
+the member returns to `Off` and the autoscaler can try again.
+
 If step 4 doesn't finish within `timeouts.shutdown`, the annotation is removed, power stays on, and
 a `ShutdownAborted` event is recorded. If step 6 fails after power is already off, the member stays
 `ShuttingDown` and the next reconcile retries. Every step is safe to repeat.

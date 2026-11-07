@@ -102,7 +102,7 @@ func (h *harness) phase(name string) Phase { return h.fleet.member(name).Phase }
 func (h *harness) powerDownOnRequest() {
 	h.client.PrependReactor("patch", "nodes", func(a k8stesting.Action) (bool, runtime.Object, error) {
 		p := string(a.(k8stesting.PatchAction).GetPatch())
-		if strings.Contains(p, AnnotationShutdown) && !strings.Contains(p, "null") {
+		if strings.Contains(p, `"`+AnnotationShutdown+`":"`) {
 			h.online.Store(false)
 			h.lease.Store(false)
 		}
@@ -493,5 +493,93 @@ func TestNodeGroupGetOptions(t *testing.T) {
 	}
 	if defaults.GetScaleDownUnneededDuration().AsDuration() != 10*time.Minute {
 		t.Fatal("defaults were modified")
+	}
+}
+
+func TestSuspendKeepsNodeAndWakes(t *testing.T) {
+	cfg := strings.Replace(testConfig, "  driver: {name: fake}", "  suspend: true\n  driver: {name: fake}", 1)
+	h := newHarness(t, cfg, allOn(), node("pi-1", nil), node("pi-2", nil))
+	ctx := context.Background()
+	h.powerDownOnRequest()
+
+	if err := h.fleet.DeleteNodes(ctx, "pis", []string{"pi-2"}); err != nil {
+		t.Fatal(err)
+	}
+	h.fleet.ops.Wait()
+
+	if p := h.phase("pi-2"); p != PhaseOff {
+		t.Fatalf("phase = %s (%s)", p, h.fleet.member("pi-2").Message)
+	}
+	if calls := h.driver.Calls(); len(calls) != 0 {
+		t.Fatalf("driver powered off a suspended host: %v", calls)
+	}
+	n, err := h.node("pi-2")
+	if err != nil {
+		t.Fatalf("node was deleted: %v", err)
+	}
+	if !hasTaint(n, TaintAsleep) {
+		t.Fatalf("taints = %v, want %s", n.Spec.Taints, TaintAsleep)
+	}
+	if _, ok := n.Annotations[AnnotationShutdownMode]; ok {
+		t.Fatal("shutdown mode annotation not cleared")
+	}
+
+	h.fleet.Reconcile(ctx)
+	if p := h.phase("pi-2"); p != PhaseOff {
+		t.Fatalf("asleep member reconciled to %s", p)
+	}
+	if size, _ := h.fleet.TargetSize("pis"); size != 1 {
+		t.Fatalf("target size = %d, want 1", size)
+	}
+
+	n.Spec.Taints = append(n.Spec.Taints, corev1.Taint{Key: toBeDeletedTaint, Effect: corev1.TaintEffectNoSchedule})
+	if _, err := h.client.CoreV1().Nodes().Update(ctx, n, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.fleet.IncreaseSize(ctx, "pis", 1); err != nil {
+		t.Fatal(err)
+	}
+	h.fleet.ops.Wait()
+	h.lease.Store(true)
+	h.fleet.Reconcile(ctx)
+
+	if p := h.phase("pi-2"); p != PhaseRunning {
+		t.Fatalf("phase after wake = %s (%s)", p, h.fleet.member("pi-2").Message)
+	}
+	n, _ = h.node("pi-2")
+	if hasTaint(n, TaintAsleep) || hasTaint(n, toBeDeletedTaint) {
+		t.Fatalf("taints after wake = %v", n.Spec.Taints)
+	}
+}
+
+func TestSuspendedMemberThatNeverWakesIsOffAgain(t *testing.T) {
+	cfg := strings.Replace(testConfig, "  driver: {name: fake}", "  suspend: true\n  timeouts: {boot: 1ms}\n  driver: {name: fake}", 1)
+	h := newHarness(t, cfg, allOn(), node("pi-1", nil))
+	ctx := context.Background()
+	asleep := node("pi-2", nil)
+	asleep.Spec.Taints = []corev1.Taint{asleepTaint}
+	if _, err := h.client.CoreV1().Nodes().Create(ctx, asleep, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	h.lease.Store(false)
+	h.fleet.update("pi-2", func(m *Member) { h.fleet.setPhase(m, PhaseBooting, "waking") })
+	time.Sleep(5 * time.Millisecond)
+	h.fleet.Reconcile(ctx)
+
+	if m := h.fleet.member("pi-2"); m.Phase != PhaseOff || m.Message != "host did not wake in time" {
+		t.Fatalf("member = %s (%s)", m.Phase, m.Message)
+	}
+}
+
+func TestTemplateDropsTransientTaints(t *testing.T) {
+	n := node("pi-1", nil)
+	n.Spec.Taints = []corev1.Taint{
+		asleepTaint,
+		{Key: corev1.TaintNodeUnreachable, Effect: corev1.TaintEffectNoSchedule},
+		{Key: "dedicated", Value: "gpu", Effect: corev1.TaintEffectNoSchedule},
+	}
+	tmpl := templateFromNode("pis", n, nil, nil)
+	if len(tmpl.Spec.Taints) != 1 || tmpl.Spec.Taints[0].Key != "dedicated" {
+		t.Fatalf("template taints = %v", tmpl.Spec.Taints)
 	}
 }

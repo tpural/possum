@@ -55,6 +55,10 @@ func (f *Fleet) reconcileMember(ctx context.Context, g *group, snap Member) {
 	node, err := f.getNode(ctx, m.Name)
 	switch {
 	case err == nil:
+		if g.cfg.Suspend && hasTaint(node, TaintAsleep) {
+			f.reconcileAsleep(ctx, g, snap, node)
+			return
+		}
 		if msg := f.adopt(ctx, g, &m, node); msg != "" {
 			f.updateIf(snap, func(mm *Member) {
 				f.setPhase(mm, PhaseUnknown, msg)
@@ -92,6 +96,38 @@ func (f *Fleet) reconcileMember(ctx context.Context, g *group, snap Member) {
 			f.setPhase(mm, PhaseBooting, "powered on, waiting for node")
 		case mm.Phase == PhaseBooting && time.Since(mm.Since) > g.cfg.Timeouts.Boot.Duration:
 			mm.Message = msgBootTimeout
+		}
+	})
+}
+
+// reconcileAsleep tracks a suspended member, whose Node stays registered. A
+// fresh node Lease means the kubelet is running again, so the host is awake.
+func (f *Fleet) reconcileAsleep(ctx context.Context, g *group, snap Member, node *corev1.Node) {
+	stale, err := f.leaseStale(ctx, node.Name, g.cfg.Timeouts.OfflineGrace.Duration)
+	if err != nil {
+		f.opts.Log.Error(err, "read node lease", "node", node.Name)
+		return
+	}
+	if !stale {
+		if err := f.patchTaints(ctx, node, withoutTaints(node.Spec.Taints, TaintAsleep, toBeDeletedTaint)); err != nil {
+			f.opts.Log.Error(err, "remove asleep taint", "node", node.Name)
+			return
+		}
+		f.event(snap.Name, corev1.EventTypeNormal, "Woke", "host is awake")
+		f.updateIf(snap, func(mm *Member) {
+			mm.Power = power.StateOn
+			f.setPhase(mm, PhaseRunning, "")
+		})
+		return
+	}
+	f.updateIf(snap, func(mm *Member) {
+		switch {
+		case mm.Phase == PhaseBooting && time.Since(mm.Since) <= g.cfg.Timeouts.Boot.Duration:
+		case mm.Phase == PhaseBooting:
+			f.setPhase(mm, PhaseOff, "host did not wake in time")
+		case mm.Phase != PhaseOff:
+			mm.Power = power.StateOff
+			f.setPhase(mm, PhaseOff, "asleep")
 		}
 	})
 }
@@ -256,6 +292,10 @@ func (f *Fleet) runShutdown(ctx context.Context, g *group, name string) error {
 		}
 	}
 
+	if g.cfg.Suspend && node != nil {
+		return f.finishSuspend(ctx, name)
+	}
+
 	if err := f.switchPower(ctx, g, m.Target, power.StateOff); err != nil {
 		return fmt.Errorf("power off %s: %w", m.Target, err)
 	}
@@ -275,6 +315,53 @@ func (f *Fleet) runShutdown(ctx context.Context, g *group, name string) error {
 	return nil
 }
 
+func (f *Fleet) finishSuspend(ctx context.Context, name string) error {
+	node, err := f.getNode(ctx, name)
+	if err != nil {
+		return errRetry{fmt.Errorf("get node: %w", err)}
+	}
+	if taints, changed := withTaints(node.Spec.Taints, []corev1.Taint{asleepTaint}); changed {
+		if err := f.patchTaints(ctx, node, taints); err != nil {
+			return errRetry{fmt.Errorf("taint node asleep: %w", err)}
+		}
+	}
+	if err := f.clearShutdown(ctx, name); err != nil {
+		return errRetry{fmt.Errorf("clear shutdown annotation: %w", err)}
+	}
+	f.event(name, corev1.EventTypeNormal, "Suspended", "host is asleep")
+	f.update(name, func(mm *Member) {
+		mm.Power = power.StateOff
+		f.setPhase(mm, PhaseOff, "asleep")
+	})
+	return nil
+}
+
+var asleepTaint = corev1.Taint{Key: TaintAsleep, Effect: corev1.TaintEffectNoSchedule}
+
+func hasTaint(node *corev1.Node, key string) bool {
+	return slices.ContainsFunc(node.Spec.Taints, func(t corev1.Taint) bool { return t.Key == key })
+}
+
+func withoutTaints(have []corev1.Taint, keys ...string) []corev1.Taint {
+	return slices.DeleteFunc(slices.Clone(have), func(t corev1.Taint) bool { return slices.Contains(keys, t.Key) })
+}
+
+// patchTaints replaces the node's taints, failing if the node changed since it was read.
+func (f *Fleet) patchTaints(ctx context.Context, node *corev1.Node, taints []corev1.Taint) error {
+	if taints == nil {
+		taints = []corev1.Taint{}
+	}
+	b, err := json.Marshal(map[string]any{
+		"metadata": map[string]any{"resourceVersion": node.ResourceVersion},
+		"spec":     map[string]any{"taints": taints},
+	})
+	if err != nil {
+		return err
+	}
+	_, err = f.opts.Client.CoreV1().Nodes().Patch(ctx, node.Name, types.MergePatchType, b, metav1.PatchOptions{})
+	return err
+}
+
 func (f *Fleet) stopHost(ctx context.Context, g *group, m Member, node *corev1.Node) error {
 	if _, cp := node.Labels[controlPlaneLabel]; cp {
 		return errors.New("refusing to shut down a control-plane node")
@@ -288,10 +375,14 @@ func (f *Fleet) stopHost(ctx context.Context, g *group, m Member, node *corev1.N
 			return err
 		}
 	}
-	if err := f.requestShutdown(ctx, node.Name); err != nil {
+	if err := f.requestShutdown(ctx, node.Name, g.cfg.Suspend); err != nil {
 		return err
 	}
-	f.event(m.Name, corev1.EventTypeNormal, "ShutdownRequested", "asked the agent to power off the host")
+	action := "power off"
+	if g.cfg.Suspend {
+		action = "suspend"
+	}
+	f.event(m.Name, corev1.EventTypeNormal, "ShutdownRequested", "asked the agent to %s the host", action)
 	return f.waitOffline(ctx, g, node.Name, addr)
 }
 
@@ -311,15 +402,24 @@ func (f *Fleet) verifyTarget(ctx context.Context, g *group, m Member) error {
 	return nil
 }
 
-func (f *Fleet) requestShutdown(ctx context.Context, name string) error {
-	at := time.Now().UTC().Format(time.RFC3339)
-	patch := fmt.Sprintf(`{"metadata":{"annotations":{%q:%q}}}`, AnnotationShutdown, at)
-	_, err := f.opts.Client.CoreV1().Nodes().Patch(ctx, name, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
+func (f *Fleet) requestShutdown(ctx context.Context, name string, suspend bool) error {
+	var mode any
+	if suspend {
+		mode = ShutdownModeSuspend
+	}
+	b, err := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]any{
+		AnnotationShutdown:     time.Now().UTC().Format(time.RFC3339),
+		AnnotationShutdownMode: mode,
+	}}})
+	if err != nil {
+		return err
+	}
+	_, err = f.opts.Client.CoreV1().Nodes().Patch(ctx, name, types.MergePatchType, b, metav1.PatchOptions{})
 	return err
 }
 
 func (f *Fleet) clearShutdown(ctx context.Context, name string) error {
-	patch := fmt.Sprintf(`{"metadata":{"annotations":{%q:null}}}`, AnnotationShutdown)
+	patch := fmt.Sprintf(`{"metadata":{"annotations":{%q:null,%q:null}}}`, AnnotationShutdown, AnnotationShutdownMode)
 	_, err := f.opts.Client.CoreV1().Nodes().Patch(ctx, name, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
 	if isNotFound(err) {
 		return nil
