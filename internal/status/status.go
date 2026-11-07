@@ -1,9 +1,10 @@
-// Package status serves the read-only status page, health checks and metrics.
+// Package status serves the status page, health checks, metrics and the wake API.
 package status
 
 import (
 	"embed"
 	"encoding/json"
+	"errors"
 	"html/template"
 	"net/http"
 	"time"
@@ -56,6 +57,19 @@ func Handler(f *provider.Fleet, gatherer prometheus.Gatherer) http.Handler {
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(report(f))
+	})
+	mux.HandleFunc("POST /api/groups/{group}/wake", func(w http.ResponseWriter, r *http.Request) {
+		started, err := f.Wake(r.Context(), r.PathValue("group"))
+		switch {
+		case errors.Is(err, provider.ErrDryRun):
+			http.Error(w, err.Error(), http.StatusConflict)
+		case err != nil:
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		case started:
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
 	})
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

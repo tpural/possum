@@ -178,6 +178,26 @@ func TestIncreaseSize(t *testing.T) {
 	}
 }
 
+func TestWakeOnlyWhenNothingIsUp(t *testing.T) {
+	cfg := strings.Replace(testConfig, "minSize: 1", "minSize: 0", 1)
+	h := newHarness(t, cfg, map[power.Target]power.State{"sw/1": power.StateOff, "sw/2": power.StateOff, "sw/3": power.StateOff})
+	ctx := context.Background()
+
+	if started, err := h.fleet.Wake(ctx, "pis"); err != nil || !started {
+		t.Fatalf("Wake = %v, %v", started, err)
+	}
+	h.fleet.ops.Wait()
+	if started, err := h.fleet.Wake(ctx, "pis"); err != nil || started {
+		t.Fatalf("second Wake = %v, %v", started, err)
+	}
+	if calls := h.driver.Calls(); len(calls) != 1 {
+		t.Fatalf("calls = %v, want one power on", calls)
+	}
+	if _, err := h.fleet.Wake(ctx, "nope"); err == nil {
+		t.Fatal("Wake of an unknown group succeeded")
+	}
+}
+
 func TestDryRunMakesNoChanges(t *testing.T) {
 	cfg := strings.Replace(testConfig, "dryRun: false", "dryRun: true", 1)
 	h := newHarness(t, cfg, allOn(), node("pi-1", nil), node("pi-2", nil))
