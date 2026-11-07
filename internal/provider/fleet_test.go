@@ -12,6 +12,7 @@ import (
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -408,5 +409,89 @@ func TestNotReadyRejectsCalls(t *testing.T) {
 	_, err = ReadyInterceptor(f)(context.Background(), nil, nil, func(context.Context, any) (any, error) { return nil, nil })
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("err = %v, want Unavailable", err)
+	}
+}
+
+func TestGroupDryRunOverridesGlobal(t *testing.T) {
+	cfg := strings.Replace(testConfig, "  driver: {name: fake}", "  dryRun: true\n  driver: {name: fake}", 1)
+	h := newHarness(t, cfg, allOn(), node("pi-1", nil), node("pi-2", nil))
+
+	if !h.fleet.DryRun("pis") {
+		t.Fatal("group dryRun override ignored")
+	}
+	if err := h.fleet.IncreaseSize(context.Background(), "pis", 1); !errors.Is(err, ErrDryRun) {
+		t.Fatalf("IncreaseSize err = %v, want ErrDryRun", err)
+	}
+}
+
+func TestGroupTaintsAndTemplateResources(t *testing.T) {
+	cfg := strings.Replace(testConfig, "  template: {cpu: \"4\", memory: 8Gi}",
+		"  taints: [{key: nvidia.com/gpu, value: present, effect: NoSchedule}]\n  template: {cpu: \"4\", memory: 8Gi, resources: {nvidia.com/gpu: \"1\"}}", 1)
+	h := newHarness(t, cfg, allOn(), node("pi-1", nil))
+
+	n, _ := h.node("pi-1")
+	if len(n.Spec.Taints) != 1 || n.Spec.Taints[0].Key != "nvidia.com/gpu" {
+		t.Fatalf("taints = %v", n.Spec.Taints)
+	}
+	h.fleet.Reconcile(context.Background())
+	if n, _ = h.node("pi-1"); len(n.Spec.Taints) != 1 {
+		t.Fatalf("taint duplicated: %v", n.Spec.Taints)
+	}
+
+	h.fleet.update("pi-1", func(m *Member) { m.Phase = PhaseOff })
+	tmpl, err := h.fleet.TemplateNode(context.Background(), "pis")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gpu := tmpl.Status.Allocatable["nvidia.com/gpu"]
+	if gpu.Value() != 1 || len(tmpl.Spec.Taints) != 1 {
+		t.Fatalf("template allocatable=%v taints=%v", tmpl.Status.Allocatable, tmpl.Spec.Taints)
+	}
+}
+
+func TestDryRunHoldsScaleDown(t *testing.T) {
+	cfg := strings.Replace(testConfig, "dryRun: false", "dryRun: true", 1)
+	h := newHarness(t, cfg, allOn(), node("pi-1", nil))
+
+	n, _ := h.node("pi-1")
+	if n.Annotations[annotationScaleDownDisabled] != "true" {
+		t.Fatalf("annotations = %v", n.Annotations)
+	}
+
+	h2 := newHarness(t, testConfig, allOn(), n)
+	if n, _ = h2.node("pi-1"); n.Annotations[annotationScaleDownDisabled] != "" || n.Annotations[annotationDryRunHold] != "" {
+		t.Fatalf("hold not released: %v", n.Annotations)
+	}
+
+	own := node("pi-2", nil)
+	own.Annotations = map[string]string{annotationScaleDownDisabled: "true"}
+	h3 := newHarness(t, testConfig, allOn(), own)
+	if n, _ = h3.node("pi-2"); n.Annotations[annotationScaleDownDisabled] != "true" {
+		t.Fatal("removed a scale-down-disabled annotation POSSUM did not set")
+	}
+}
+
+func TestNodeGroupGetOptions(t *testing.T) {
+	ctx := context.Background()
+	defaults := &protos.NodeGroupAutoscalingOptions{ScaleDownUtilizationThreshold: 0.5, ScaleDownUnneededDuration: durationpb.New(10 * time.Minute)}
+
+	h := newHarness(t, testConfig, allOn(), node("pi-1", nil))
+	_, err := NewServer(h.fleet).NodeGroupGetOptions(ctx, &protos.NodeGroupAutoscalingOptionsRequest{Id: "pis", Defaults: defaults})
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("err = %v, want Unimplemented without overrides", err)
+	}
+
+	cfg := strings.Replace(testConfig, "  driver: {name: fake}", "  scaleDownUnneededTime: 45m\n  driver: {name: fake}", 1)
+	h = newHarness(t, cfg, allOn(), node("pi-1", nil))
+	resp, err := NewServer(h.fleet).NodeGroupGetOptions(ctx, &protos.NodeGroupAutoscalingOptionsRequest{Id: "pis", Defaults: defaults})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := resp.GetNodeGroupAutoscalingOptions()
+	if o.GetScaleDownUnneededDuration().AsDuration() != 45*time.Minute || o.GetScaleDownUtilizationThreshold() != 0.5 {
+		t.Fatalf("options = %v", o)
+	}
+	if defaults.GetScaleDownUnneededDuration().AsDuration() != 10*time.Minute {
+		t.Fatal("defaults were modified")
 	}
 }

@@ -7,6 +7,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/tpural/possum/internal/externalgrpc/protos"
 )
@@ -148,6 +150,20 @@ func (s *Server) NodeGroupTemplateNodeInfo(ctx context.Context, req *protos.Node
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &protos.NodeGroupTemplateNodeInfoResponse{NodeBytes: b}, nil
+}
+
+// NodeGroupGetOptions overrides the autoscaler's defaults for groups that set their own.
+func (s *Server) NodeGroupGetOptions(_ context.Context, req *protos.NodeGroupAutoscalingOptionsRequest) (*protos.NodeGroupAutoscalingOptionsResponse, error) {
+	g, err := s.fleet.group(req.GetId())
+	if err != nil {
+		return nil, grpcErr(err)
+	}
+	if g.cfg.ScaleDownUnneededTime.Duration == 0 || req.GetDefaults() == nil {
+		return nil, status.Error(codes.Unimplemented, "no per-group options")
+	}
+	opts := proto.Clone(req.GetDefaults()).(*protos.NodeGroupAutoscalingOptions)
+	opts.ScaleDownUnneededDuration = durationpb.New(g.cfg.ScaleDownUnneededTime.Duration)
+	return &protos.NodeGroupAutoscalingOptionsResponse{NodeGroupAutoscalingOptions: opts}, nil
 }
 
 func grpcErr(err error) error {

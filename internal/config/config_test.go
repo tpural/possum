@@ -81,3 +81,32 @@ func TestParseInvalid(t *testing.T) {
 		})
 	}
 }
+
+func TestGroupOverrides(t *testing.T) {
+	c, err := Parse([]byte(strings.Replace(valid, "  minSize: 1\n", "  minSize: 1\n  dryRun: true\n  timeouts: {powerSettle: 3m}\n", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := c.NodeGroups[0]
+	if !g.DryRunEnabled() || c.DryRunEnabled() {
+		t.Errorf("dryRun group=%v global=%v", g.DryRunEnabled(), c.DryRunEnabled())
+	}
+	if g.Timeouts.PowerSettle.Duration != 3*time.Minute || g.Timeouts.Shutdown.Duration != 5*time.Minute {
+		t.Errorf("timeouts = %+v", g.Timeouts)
+	}
+
+	c, err = Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.NodeGroups[0].DryRunEnabled() {
+		t.Error("group should inherit dryRun: false")
+	}
+}
+
+func TestInvalidTaint(t *testing.T) {
+	_, err := Parse([]byte(strings.Replace(valid, "  minSize: 1\n", "  minSize: 1\n  taints: [{key: gpu, effect: Sometimes}]\n", 1)))
+	if err == nil || !strings.Contains(err.Error(), "invalid effect") {
+		t.Fatalf("err = %v", err)
+	}
+}

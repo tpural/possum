@@ -32,9 +32,9 @@
 <main>
   <h1>POSSUM</h1>
   <div class="sub">Down, but not out.</div>
-  {{if .DryRun}}<div class="banner">Dry run: POSSUM records what it would do but never changes power.</div>{{end}}
   {{range $g := .Groups}}
   <h2>{{$g.Name}} <span class="sub">{{$g.Target}} on · min {{$g.MinSize}} · max {{$g.MaxSize}}</span></h2>
+  {{if $g.DryRun}}<div class="banner">Dry run: POSSUM records what it would do for {{$g.Name}} but never changes its power.</div>{{end}}
   <div class="wrap"><table>
     <tr><th>Node</th><th>Phase</th><th>For</th><th>Target</th><th>Power</th><th>Message</th></tr>
     {{range $.Members}}{{if eq .Group $g.Name}}

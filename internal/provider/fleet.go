@@ -24,6 +24,9 @@ const (
 	AnnotationShutdown = "possum.dev/shutdown"
 	AnnotationMAC      = "possum.dev/mac"
 
+	annotationScaleDownDisabled = "cluster-autoscaler.kubernetes.io/scale-down-disabled"
+	annotationDryRunHold        = "possum.dev/dry-run-hold"
+
 	controlPlaneLabel = "node-role.kubernetes.io/control-plane"
 )
 
@@ -76,7 +79,6 @@ type Options struct {
 // Fleet tracks every managed member and drives power transitions.
 type Fleet struct {
 	opts   Options
-	dryRun bool
 	groups map[string]*group
 	order  []string
 	state  *stateStore
@@ -107,7 +109,6 @@ func NewFleet(opts Options) (*Fleet, error) {
 	}
 	f := &Fleet{
 		opts:    opts,
-		dryRun:  opts.Config.DryRunEnabled(),
 		groups:  map[string]*group{},
 		members: map[string]*Member{},
 		busy:    map[string]bool{},
@@ -135,8 +136,11 @@ func NewFleet(opts Options) (*Fleet, error) {
 	return f, nil
 }
 
-// DryRun reports whether power changes are suppressed.
-func (f *Fleet) DryRun() bool { return f.dryRun }
+// DryRun reports whether power changes are suppressed for the group.
+func (f *Fleet) DryRun(group string) bool {
+	g, ok := f.groups[group]
+	return !ok || g.cfg.DryRunEnabled()
+}
 
 // Ready reports whether the first reconcile has completed.
 func (f *Fleet) Ready() bool {
@@ -275,7 +279,7 @@ func (f *Fleet) IncreaseSize(ctx context.Context, groupName string, delta int) e
 		f.mu.Unlock()
 		return fmt.Errorf("only %d of %d requested nodes are off and available", len(picked), delta)
 	}
-	if f.dryRun {
+	if g.cfg.DryRunEnabled() {
 		f.mu.Unlock()
 		for _, m := range picked {
 			f.event(m.Name, corev1.EventTypeNormal, "DryRunPowerOn", "would power on %s", m.Target)
@@ -332,7 +336,7 @@ func (f *Fleet) DeleteNodes(ctx context.Context, groupName string, names []strin
 		}
 		picked = append(picked, m)
 	}
-	if f.dryRun {
+	if g.cfg.DryRunEnabled() {
 		f.mu.Unlock()
 		for _, m := range picked {
 			f.event(m.Name, corev1.EventTypeNormal, "DryRunPowerOff", "would shut down and power off %s", m.Target)

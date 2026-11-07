@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
@@ -39,13 +40,20 @@ type Timeouts struct {
 }
 
 // NodeGroup is a set of interchangeable nodes sharing one power driver.
+// DryRun and Timeouts fall back to the top-level values when unset.
 type NodeGroup struct {
-	Name     string            `json:"name"`
-	MinSize  int               `json:"minSize"`
-	MaxSize  int               `json:"maxSize"`
+	Name     string   `json:"name"`
+	MinSize  int      `json:"minSize"`
+	MaxSize  int      `json:"maxSize"`
+	DryRun   *bool    `json:"dryRun,omitempty"`
+	Timeouts Timeouts `json:"timeouts"`
+
+	ScaleDownUnneededTime metav1.Duration `json:"scaleDownUnneededTime,omitempty"`
+
 	Driver   Driver            `json:"driver"`
 	Template *Template         `json:"template,omitempty"`
 	Labels   map[string]string `json:"labels,omitempty"`
+	Taints   []corev1.Taint    `json:"taints,omitempty"`
 	Nodes    []Node            `json:"nodes"`
 }
 
@@ -58,10 +66,11 @@ type Driver struct {
 // Template describes a node of the group for scale-up simulation when no
 // member is running to copy from.
 type Template struct {
-	CPU    resource.Quantity `json:"cpu"`
-	Memory resource.Quantity `json:"memory"`
-	Pods   int64             `json:"pods,omitempty"`
-	Labels map[string]string `json:"labels,omitempty"`
+	CPU       resource.Quantity   `json:"cpu"`
+	Memory    resource.Quantity   `json:"memory"`
+	Pods      int64               `json:"pods,omitempty"`
+	Resources corev1.ResourceList `json:"resources,omitempty"`
+	Labels    map[string]string   `json:"labels,omitempty"`
 }
 
 // Node is a single machine. Target is optional when the driver can discover it
@@ -72,8 +81,11 @@ type Node struct {
 	MAC    string `json:"mac,omitempty"`
 }
 
-// DryRunEnabled reports whether POSSUM should only log what it would do.
+// DryRunEnabled reports whether POSSUM should only log what it would do by default.
 func (c *Config) DryRunEnabled() bool { return c.DryRun == nil || *c.DryRun }
+
+// DryRunEnabled reports whether the group only logs what it would do.
+func (g *NodeGroup) DryRunEnabled() bool { return g.DryRun == nil || *g.DryRun }
 
 // Load reads and validates the config file at path.
 func Load(path string) (*Config, error) {
@@ -114,8 +126,16 @@ func (c *Config) setDefaults() {
 	def(&c.Timeouts.OfflineGrace, 20*time.Second)
 	def(&c.Timeouts.PowerSettle, time.Minute)
 	for i := range c.NodeGroups {
-		if t := c.NodeGroups[i].Template; t != nil && t.Pods == 0 {
-			t.Pods = 110
+		g := &c.NodeGroups[i]
+		if g.DryRun == nil {
+			g.DryRun = c.DryRun
+		}
+		def(&g.Timeouts.Boot, c.Timeouts.Boot.Duration)
+		def(&g.Timeouts.Shutdown, c.Timeouts.Shutdown.Duration)
+		def(&g.Timeouts.OfflineGrace, c.Timeouts.OfflineGrace.Duration)
+		def(&g.Timeouts.PowerSettle, c.Timeouts.PowerSettle.Duration)
+		if g.Template != nil && g.Template.Pods == 0 {
+			g.Template.Pods = 110
 		}
 	}
 }
@@ -152,6 +172,14 @@ func (c *Config) Validate() error {
 		}
 		if t := g.Template; t != nil && (t.CPU.IsZero() || t.Memory.IsZero()) {
 			add("%s: template needs cpu and memory", p)
+		}
+		for _, t := range g.Taints {
+			switch {
+			case t.Key == "":
+				add("%s: taint needs a key", p)
+			case t.Effect != corev1.TaintEffectNoSchedule && t.Effect != corev1.TaintEffectPreferNoSchedule && t.Effect != corev1.TaintEffectNoExecute:
+				add("%s: taint %s has invalid effect %q", p, t.Key, t.Effect)
+			}
 		}
 		for _, n := range g.Nodes {
 			if !nameRE.MatchString(n.Name) {

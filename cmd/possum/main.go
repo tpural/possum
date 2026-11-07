@@ -27,6 +27,7 @@ import (
 
 	_ "github.com/tpural/possum/drivers/fake"
 	_ "github.com/tpural/possum/drivers/unifi"
+	_ "github.com/tpural/possum/drivers/wol"
 	"github.com/tpural/possum/internal/agent"
 	"github.com/tpural/possum/internal/config"
 	"github.com/tpural/possum/internal/externalgrpc/protos"
@@ -124,7 +125,7 @@ func runProvider(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	log.Info("starting", "version", version, "dryRun", fleet.DryRun(), "drivers", power.Drivers())
+	log.Info("starting", "version", version, "dryRun", cfg.DryRunEnabled(), "drivers", power.Drivers())
 
 	lis, err := net.Listen("tcp", *grpcAddr)
 	if err != nil {

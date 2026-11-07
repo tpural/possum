@@ -26,9 +26,12 @@ credentials:
   username: ""
   password: ""
 
-# The provider and autoscaler avoid the managed nodes unless an affinity is set, so a scale-down never
-# evicts them.
+# The provider pod (which also runs the cluster autoscaler) avoids the managed nodes unless an affinity is
+# set, so a scale-down never evicts it. Set hostNetwork for drivers that need the node's network, such as
+# Wake-on-LAN broadcasts; the gRPC API stays on 127.0.0.1.
 provider:
+  hostNetwork: false
+  httpPort: 8080
   resources:
     requests: {cpu: 10m, memory: 32Mi}
     limits: {memory: 128Mi}
@@ -52,9 +55,6 @@ autoscaler:
   resources:
     requests: {cpu: 50m, memory: 128Mi}
     limits: {memory: 512Mi}
-  nodeSelector: {}
-  tolerations: []
-  affinity: {}
   args:
     scale-down-unneeded-time: 10m
     scale-down-delay-after-add: 10m
@@ -62,10 +62,6 @@ autoscaler:
     expander: least-waste
     skip-nodes-with-local-storage: "false"
     v: "2"
-
-# Only the bundled autoscaler may call the gRPC API; the status port stays open.
-networkPolicy:
-  enabled: true
 
 httpRoute:
   enabled: false

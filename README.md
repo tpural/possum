@@ -46,7 +46,8 @@ Measured on a Raspberry Pi 4 (network boot) on a UniFi US-16-PoE-150W:
 ## Safety
 
 - **Dry run by default.** POSSUM records what it *would* do and changes nothing until you set
-  `dryRun: false`. The chart also turns autoscaler scale-down off while in dry run.
+  `dryRun: false`, globally or per node group. Nodes of a dry-run group are annotated so the autoscaler
+  never drains them.
 - **Only listed nodes.** Members are an explicit allowlist. Control-plane nodes are always refused.
 - **Never cut power under a live host.** Power is removed only after the host has stopped
   answering for a grace period.
@@ -95,6 +96,7 @@ decisions look right, set `dryRun: false`.
 | Driver | Switches | Target format |
 |---|---|---|
 | `unifi` | PoE ports through a UniFi OS console (Cloud Key, UDM, UCG) | `<switch-mac>/<port>` |
+| `wol` | Wake-on-LAN; power off is the agent's graceful shutdown | `<mac>@<host>` |
 | `fake` | in-memory, for tests and demos | any string |
 
 Writing a driver takes one Go package with four methods. See [docs/drivers.md](docs/drivers.md).

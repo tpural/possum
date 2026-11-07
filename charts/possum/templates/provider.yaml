@@ -70,9 +70,11 @@ metadata:
 spec:
   selector: {{- include "possum.selector" (dict "root" . "component" "provider") | nindent 4 }}
   ports:
+    {{- if not .Values.autoscaler.enabled }}
     - name: grpc
       port: 8086
       targetPort: grpc
+    {{- end }}
     - name: http
       port: 8080
       targetPort: http
@@ -93,8 +95,14 @@ spec:
       labels: {{- include "possum.selector" (dict "root" . "component" "provider") | nindent 8 }}
       annotations:
         checksum/config: {{ toYaml .Values.config | sha256sum }}
+        checksum/autoscaler: {{ toYaml .Values.autoscaler | sha256sum }}
     spec:
       serviceAccountName: {{ include "possum.fullname" . }}
+      priorityClassName: system-cluster-critical
+      {{- if .Values.provider.hostNetwork }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         seccompProfile: {type: RuntimeDefault}
@@ -102,7 +110,12 @@ spec:
         - name: provider
           image: {{ include "possum.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          args: [provider, --config=/etc/possum/config.yaml, -v={{ .Values.provider.logLevel }}]
+          args:
+            - provider
+            - --config=/etc/possum/config.yaml
+            - --grpc-addr={{ if .Values.autoscaler.enabled }}127.0.0.1{{ end }}:8086
+            - --http-addr=:{{ .Values.provider.httpPort }}
+            - -v={{ .Values.provider.logLevel }}
           env:
             - name: POD_NAMESPACE
               valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
@@ -111,8 +124,10 @@ spec:
             - name: POSSUM_UNIFI_PASSWORD
               valueFrom: {secretKeyRef: {name: {{ include "possum.secretName" . }}, key: password, optional: true}}
           ports:
+            {{- if not .Values.autoscaler.enabled }}
             - {name: grpc, containerPort: 8086}
-            - {name: http, containerPort: 8080}
+            {{- end }}
+            - {name: http, containerPort: {{ .Values.provider.httpPort }}}
           livenessProbe:
             httpGet: {path: /healthz, port: http}
           readinessProbe:
@@ -124,10 +139,36 @@ spec:
             capabilities: {drop: [ALL]}
           volumeMounts:
             - {name: config, mountPath: /etc/possum, readOnly: true}
+        {{- if .Values.autoscaler.enabled }}
+        - name: cluster-autoscaler
+          image: {{ .Values.autoscaler.image.repository }}:{{ .Values.autoscaler.image.tag }}
+          command: [./cluster-autoscaler]
+          args:
+            - --cloud-provider=externalgrpc
+            - --cloud-config=/etc/autoscaler/cloud-config.yaml
+            - --namespace={{ .Release.Namespace }}
+            - --address=127.0.0.1:8085
+            {{- range $k, $v := .Values.autoscaler.args }}
+            - --{{ $k }}={{ $v }}
+            {{- end }}
+          resources: {{- toYaml .Values.autoscaler.resources | nindent 12 }}
+          securityContext:
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: cloud-config, mountPath: /etc/autoscaler, readOnly: true}
+        {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ include "possum.fullname" . }}
+        {{- if .Values.autoscaler.enabled }}
+        - name: cloud-config
+          configMap:
+            name: {{ include "possum.fullname" . }}-autoscaler
+        {{- end }}
       {{- with .Values.provider.nodeSelector }}
       nodeSelector: {{- toYaml . | nindent 8 }}
       {{- end }}

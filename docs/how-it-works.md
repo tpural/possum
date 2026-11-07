@@ -4,8 +4,8 @@ POSSUM has three parts:
 
 | Component | Runs as | Job |
 |---|---|---|
-| Cluster Autoscaler | Deployment | Decides when to add or remove nodes |
-| `possum provider` | Deployment, one replica | Implements the externalgrpc cloud provider and drives power |
+| Cluster Autoscaler | Container in the provider pod | Decides when to add or remove nodes |
+| `possum provider` | Deployment, one replica | Implements the externalgrpc cloud provider over `127.0.0.1` and drives power |
 | `possum agent` | DaemonSet on managed nodes | Powers its own host off gracefully when asked |
 
 ## Node lifecycle
@@ -86,7 +86,8 @@ before POSSUM can power it off.
 - **System pods.** By default the autoscaler won't remove a node running `kube-system` pods that
   aren't DaemonSets, such as CoreDNS or metrics-server. Either keep those pods off the managed
   nodes, give them PodDisruptionBudgets, or set `autoscaler.args.skip-nodes-with-system-pods: "false"`.
-- **Access.** The chart's NetworkPolicy lets only the bundled autoscaler reach the gRPC port. The
-  status port (8080) is read-only and stays open.
+- **Access.** The autoscaler runs in the provider pod and reaches it on `127.0.0.1`, so the gRPC API is never
+  exposed. Only the read-only status port (8080) is served. With `autoscaler.enabled: false` you bring your own
+  autoscaler; the provider then listens on the network and you must secure that yourself.
 - **Agent privileges.** The agent runs as root with only `CAP_SYS_BOOT`, which logind requires to
   power off without polkit. It uses host networking so it can find the node's MAC address.
